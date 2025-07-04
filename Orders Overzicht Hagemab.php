@@ -1085,8 +1085,8 @@ function initDailySummaryButtons() {
 }
 
 function initPackingSlipButtons() {
-    document.querySelectorAll('.wc-pakbon-button a').forEach(a => {
-        a.setAttribute('target', '_blank');
+    document.querySelectorAll(".wc-pakbon-button a").forEach(a => {
+        a.setAttribute("target", "_blank");
     });
 }
 </script>
@@ -1313,14 +1313,14 @@ if ( ! empty( $item['important_opmerking'] ) ) {
              . esc_html( $item['important_opmerking'] )
              . '</div>';
 }
-				                $output .= '<div class="wc-pakbon-button" style="margin:8px 0;">'
-                         . do_shortcode(
-                             '[wcpdf_download_pdf document_type="packing-slip" '
-                           . 'order_id="' . esc_attr( $item['order_id'] ) . '" '
-                           . 'link_text="📄 keuken order bekijken"]'
-                         )
-                         . '</div>';
-                $output .= '</div>';
+$output .= '<div class="wc-pakbon-button" style="margin:8px 0;">'
+         . do_shortcode(
+             '[wcpdf_download_pdf document_type="packing-slip" '
+           . 'order_id="' . esc_attr( $item['order_id'] ) . '" '
+           . 'link_text="📄 keuken order bekijken"]'
+         )
+         . '</div>';
+$output .= '</div>';
             }
         } else {
             $output .= '<div class="wc-weekagenda-leeg-google">Geen bestellingen vandaag! </div>';
