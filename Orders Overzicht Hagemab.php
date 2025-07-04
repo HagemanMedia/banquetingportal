@@ -1,3 +1,8 @@
+<?php
+/**
+ * Plugin Name: Banqueting Orders Overzicht
+ * Description: Weekly agenda for WooCommerce and custom orders.
+ */
 
 error_log('DEBUG: File loaded.'); // Debug log: Controleert of het bestand wordt geladen
 
@@ -109,6 +114,7 @@ $day_filter = isset($_GET['filter_day'])
         $eindtijd      = get_post_meta($order_id, 'order_eindtijd', true);
         $locatie       = get_post_meta($order_id, 'order_location', true);
         $personen      = get_post_meta($order_id, 'order_personen', true);
+        $important_note = get_post_meta($order_id, 'important_opmerking', true);
         $order_reference = get_post_meta($order_id, 'order_reference', true);
         $billing_company = $order->get_billing_company();
         $customer_note = $order->get_customer_note(); // Haal klantnotitie op voor indicator
@@ -127,6 +133,7 @@ $day_filter = isset($_GET['filter_day'])
             'order_reference'           => $order_reference,
             'post_status'               => $order_post->post_status,
             'billing_company'           => $billing_company,
+            'important_opmerking'       => $important_note,
             'has_note'                  => !empty($customer_note) // Voeg 'has_note' vlag toe
         );
     }
@@ -865,6 +872,7 @@ document.addEventListener("DOMContentLoaded", function() {
     initRefreshButton();
     initFilters();
     initDailySummaryButtons();
+    initPackingSlipButtons();
 
     // **TOEGEVOEGD**: filter WooCommerce-only
     const filterWcBtn = document.getElementById("wc-filter-wc");
@@ -947,6 +955,7 @@ function initAgendaNavigation() {
                 initRefreshButton();
                 initFilters();
                 initDailySummaryButtons();
+                initPackingSlipButtons();
             }
         })
         .catch(() => {
@@ -990,6 +999,7 @@ function initModalFunctionality() {
         .then(data => {
             modalBody.innerHTML = data.success ? data.data :
                 \'<div style="text-align:center;padding:20px;color:red;">\' + data.data + \'</div>\';
+            initPackingSlipButtons();
         })
         .catch(() => {
             modalBody.innerHTML = \'<div style="text-align:center;padding:20px;color:red;">Fout bij het laden van bestelgegevens.</div>\';
@@ -1053,6 +1063,8 @@ function initFilters() {
         d.setDate(d.getDate() - day);
         const mon = d.getFullYear()+"/"+String(d.getMonth()+1).padStart(2,"0")+"/"+String(d.getDate()).padStart(2,"0");
         fetchAgenda(mon, document.querySelector(".wc-weekagenda-wrapper").dataset.agendaVisibility);
+        // Zorg dat pakbonknoppen opnieuw werken na datumwissel
+        setTimeout(initPackingSlipButtons, 500);
     }
 }
 
@@ -1075,6 +1087,12 @@ function initDailySummaryButtons() {
         .then(d=> body.innerHTML = d.success? d.data : \'<div style="text-align:center;color:red;">\' + d.data + \'</div>\')
         .catch(()=> body.innerHTML = \'<div style="text-align:center;color:red;">Fout bij laden dagoverzicht.</div>\');
     }
+}
+
+function initPackingSlipButtons() {
+    document.querySelectorAll(".wc-pakbon-button a").forEach(a => {
+        a.setAttribute("target", "_blank");
+    });
 }
 </script>
 ';
@@ -1294,20 +1312,20 @@ if (! empty( $item['aantal_medewerkers'] ) && intval( $item['aantal_medewerkers'
     $output .= '<br><span class="wc-info-text">👷 <b>' . esc_html( $count ) . '</b> ' . esc_html( $label ) . '</span>';
 }
 
-// Belangrijke Opmerking (alleen bij maatwerk en niet-leeg)
-if ( $item['type'] === 'maatwerk' ) {
+// Belangrijke Opmerking tonen wanneer aanwezig
+if ( ! empty( $item['important_opmerking'] ) ) {
     $output .= '<br><div class="wc-info-text"><strong>✏️ </strong>'
              . esc_html( $item['important_opmerking'] )
              . '</div>';
 }
-				                $output .= '<div class="wc-pakbon-button" style="margin:8px 0;">'
-                         . do_shortcode(
-                             '[wcpdf_download_pdf document_type="packing-slip" '
-                           . 'order_id="' . esc_attr( $item['order_id'] ) . '" '
-                           . 'link_text="📄 keuken order bekijken"]'
-                         )
-                         . '</div>';
-                $output .= '</div>';
+$output .= '<div class="wc-pakbon-button" style="margin:8px 0;">'
+         . do_shortcode(
+             '[wcpdf_download_pdf document_type="packing-slip" '
+           . 'order_id="' . esc_attr( $item['order_id'] ) . '" '
+           . 'link_text="📄 keuken order bekijken"]'
+         )
+         . '</div>';
+$output .= '</div>';
             }
         } else {
             $output .= '<div class="wc-weekagenda-leeg-google">Geen bestellingen vandaag! </div>';
@@ -1370,6 +1388,7 @@ function wc_orders_week_agenda_ajax_handler() {
         $eindtijd      = get_post_meta($order_id, 'order_eindtijd', true);
         $locatie       = get_post_meta($order_id, 'order_location', true);
         $personen      = get_post_meta($order_id, 'order_personen', true);
+        $important_note = get_post_meta($order_id, 'important_opmerking', true);
         $order_reference = get_post_meta($order_id, 'order_reference', true);
         $billing_company = $order->get_billing_company();
         $customer_note = $order->get_customer_note(); // Haal klantnotitie op voor indicator
@@ -1386,6 +1405,7 @@ function wc_orders_week_agenda_ajax_handler() {
             'order_reference'           => $order_reference,
             'post_status'               => $order_post->post_status,
             'billing_company'           => $billing_company,
+            'important_opmerking'       => $important_note,
             'has_note'                  => !empty($customer_note) // Voeg 'has_note' vlag toe
         );
     }
@@ -1479,6 +1499,7 @@ function wc_orders_week_agenda_ajax_handler() {
             'maatwerk_telefoonnummer'   => $maatwerk_telefoonnummer,
             'postcode'                  => $postcode,
             'opmerkingen'               => $opmerkingen,
+            'important_opmerking'       => $important_opmerking,
             'aantal_medewerkers'        => $aantal_medewerkers,
             'aantal_personen_raw'       => $aantal_personen,
             'optie_geldig_tot'          => $optie_geldig_tot, // Voeg optie_geldig_tot toe aan de agenda array
@@ -1567,6 +1588,10 @@ function wc_get_order_details_ajax_handler() {
 
         $output .= '<p>📍 ' . esc_html(get_post_meta($order_id, 'order_location', true)) . '</p>';
         $output .= '<p>👥 ' . esc_html(get_post_meta($order_id, 'order_personen', true)) . ' Personen</p>';
+        $important_note = get_post_meta($order_id, 'important_opmerking', true);
+        if (!empty($important_note)) {
+            $output .= '<p><strong>✏️</strong> ' . esc_html($important_note) . '</p>';
+        }
         $output .= '</div>';
 
         // Notities sectie
@@ -1604,6 +1629,13 @@ function wc_get_order_details_ajax_handler() {
         }
         $output .= '</ul>';
         $output .= '</div>';
+        $output .= '<div class="wc-pakbon-button" style="margin:8px 0;">'
+                 . do_shortcode(
+                     '[wcpdf_download_pdf document_type="packing-slip" '
+                   . 'order_id="' . esc_attr( $order_id ) . '" '
+                   . 'link_text="📄 keuken order bekijken"]'
+                 )
+                 . '</div>';
 
     } elseif ($order_type === 'maatwerk') {
         // Haal maatwerk order post op
@@ -1799,6 +1831,13 @@ function wc_get_order_details_ajax_handler() {
                 error_log('DEBUG: PDF section hidden for maatwerk order ' . $order_id . ' due to visibility setting and non-admin user.');
             }
         }
+        $output .= '<div class="wc-pakbon-button" style="margin:8px 0;">'
+                 . do_shortcode(
+                     '[wcpdf_download_pdf document_type="packing-slip" '
+                   . 'order_id="' . esc_attr( $order_id ) . '" '
+                   . 'link_text="📄 keuken order bekijken"]'
+                 )
+                 . '</div>';
 
     } else {
         wp_send_json_error('Onbekend order type.');
