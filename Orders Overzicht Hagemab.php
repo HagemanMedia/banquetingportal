@@ -865,6 +865,7 @@ document.addEventListener("DOMContentLoaded", function() {
     initRefreshButton();
     initFilters();
     initDailySummaryButtons();
+    initPackingSlipButtons();
 
     // **TOEGEVOEGD**: filter WooCommerce-only
     const filterWcBtn = document.getElementById("wc-filter-wc");
@@ -947,6 +948,7 @@ function initAgendaNavigation() {
                 initRefreshButton();
                 initFilters();
                 initDailySummaryButtons();
+                initPackingSlipButtons();
             }
         })
         .catch(() => {
@@ -990,6 +992,7 @@ function initModalFunctionality() {
         .then(data => {
             modalBody.innerHTML = data.success ? data.data :
                 \'<div style="text-align:center;padding:20px;color:red;">\' + data.data + \'</div>\';
+            initPackingSlipButtons();
         })
         .catch(() => {
             modalBody.innerHTML = \'<div style="text-align:center;padding:20px;color:red;">Fout bij het laden van bestelgegevens.</div>\';
@@ -1075,6 +1078,12 @@ function initDailySummaryButtons() {
         .then(d=> body.innerHTML = d.success? d.data : \'<div style="text-align:center;color:red;">\' + d.data + \'</div>\')
         .catch(()=> body.innerHTML = \'<div style="text-align:center;color:red;">Fout bij laden dagoverzicht.</div>\');
     }
+}
+
+function initPackingSlipButtons() {
+    document.querySelectorAll('.wc-pakbon-button a').forEach(a => {
+        a.setAttribute('target', '_blank');
+    });
 }
 </script>
 ';
@@ -1295,7 +1304,7 @@ if (! empty( $item['aantal_medewerkers'] ) && intval( $item['aantal_medewerkers'
 }
 
 // Belangrijke Opmerking (alleen bij maatwerk en niet-leeg)
-if ( $item['type'] === 'maatwerk' ) {
+if ( $item['type'] === 'maatwerk' && ! empty( $item['important_opmerking'] ) ) {
     $output .= '<br><div class="wc-info-text"><strong>✏️ </strong>'
              . esc_html( $item['important_opmerking'] )
              . '</div>';
@@ -1605,6 +1614,13 @@ function wc_get_order_details_ajax_handler() {
         }
         $output .= '</ul>';
         $output .= '</div>';
+        $output .= '<div class="wc-pakbon-button" style="margin:8px 0;">'
+                 . do_shortcode(
+                     '[wcpdf_download_pdf document_type="packing-slip" '
+                   . 'order_id="' . esc_attr( $order_id ) . '" '
+                   . 'link_text="📄 keuken order bekijken"]'
+                 )
+                 . '</div>';
 
     } elseif ($order_type === 'maatwerk') {
         // Haal maatwerk order post op
@@ -1800,6 +1816,13 @@ function wc_get_order_details_ajax_handler() {
                 error_log('DEBUG: PDF section hidden for maatwerk order ' . $order_id . ' due to visibility setting and non-admin user.');
             }
         }
+        $output .= '<div class="wc-pakbon-button" style="margin:8px 0;">'
+                 . do_shortcode(
+                     '[wcpdf_download_pdf document_type="packing-slip" '
+                   . 'order_id="' . esc_attr( $order_id ) . '" '
+                   . 'link_text="📄 keuken order bekijken"]'
+                 )
+                 . '</div>';
 
     } else {
         wp_send_json_error('Onbekend order type.');
