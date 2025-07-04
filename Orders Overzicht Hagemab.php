@@ -1,1709 +1,1941 @@
 
-if ( ! defined( 'ABSPATH' ) ) {
-    exit;
-}
+error_log('DEBUG: File loaded.'); // Debug log: Controleert of het bestand wordt geladen
+
+// Voeg deze code toe aan functions.php of in een plugin
+
+add_shortcode('wc_orders_week_agenda', 'show_wc_orders_week_agenda');
 
 /**
- * Enqueue Font Awesome zodat de iconen zichtbaar zijn.
- */
-add_action( 'wp_enqueue_scripts', 'enqueue_font_awesome_for_orders_overzicht' );
-function enqueue_font_awesome_for_orders_overzicht() {
-    wp_enqueue_style( 'font-awesome', 'https://cdnjs.cloudflare.com/ajax/libs/font-awesome/4.7.0/css/font-awesome.min.css' );
-}
-
-/**
- * Nieuwe gebruiker aanmaken via de popup.
- * Wanneer deze popup wordt ingezonden, wordt een nieuwe gebruiker aangemaakt.
- */
-$new_user_created = false;
-$new_user_data = array(
-    'first_name' => '',
-    'last_name'  => '',
-    'company'    => '',
-    'street'     => '',
-    'postcode'   => '',
-    'city'       => '',
-    'email'      => '',
-    'phone'      => '',
-);
-if ( isset($_POST['new_user_submit']) ) {
-    // Verzamel en sanitiseer invoer
-    $first_name = sanitize_text_field( $_POST['new_first_name'] );
-    $last_name  = sanitize_text_field( $_POST['new_last_name'] );
-    $company    = isset($_POST['new_company']) ? sanitize_text_field( $_POST['new_company'] ) : '';
-    $street     = isset($_POST['new_street']) ? sanitize_text_field( $_POST['new_street'] ) : '';
-    $postcode   = isset($_POST['new_postcode']) ? sanitize_text_field( $_POST['new_postcode'] ) : '';
-    $city       = isset($_POST['new_city']) ? sanitize_text_field( $_POST['new_city'] ) : '';
-    $email      = sanitize_email( $_POST['new_email'] );
-    $phone      = isset($_POST['new_phone']) ? sanitize_text_field( $_POST['new_phone'] ) : '';
-
-    // Bewaar ingevulde waarden voor later in de popup
-    $new_user_data = array(
-        'first_name' => $first_name,
-        'last_name'  => $last_name,
-        'company'    => $company,
-        'street'     => $street,
-        'postcode'   => $postcode,
-        'city'       => $city,
-        'email'      => $email,
-        'phone'      => $phone,
-    );
-
-    // Als er geen e-mail is ingevuld, genereer dan een dummy-e-mail (WordPress vereist een e-mail)
-    if ( empty( $email ) ) {
-         $name_part = trim($first_name . $last_name);
-         if ( empty( $name_part ) ) {
-             $name_part = 'user';
-         }
-         $email = strtolower( preg_replace('/\s+/', '', $name_part) ) . '-' . time() . '@example.com';
-    }
-
-    // Bepaal gebruikersnaam op basis van het gedeelte voor '@'
-    $username_base = strstr( $email, '@', true );
-    if ( empty( $username_base ) ) {
-        $username_base = 'user';
-    }
-    $username = $username_base;
-    $counter = 1;
-    while ( username_exists( $username ) ) {
-        $username = $username_base . $counter;
-        $counter++;
-    }
-
-    // Maak een willekeurig wachtwoord aan
-    $password = wp_generate_password( 12, false );
-
-    // Maak de gebruiker aan
-    $userdata = array(
-        'user_login' => $username,
-        'user_email' => $email,
-        'user_pass'  => $password,
-        'first_name' => $first_name,
-        'last_name'  => $last_name,
-    );
-    $user_id = wp_insert_user( $userdata );
-
-    if ( is_wp_error( $user_id ) ) {
-        wp_die("Er is een fout opgetreden: " . $user_id->get_error_message());
-    } else {
-        if ( ! empty( $company ) ) {
-            update_user_meta( $user_id, 'billing_company', $company );
-        }
-        if ( ! empty( $street ) ) {
-            update_user_meta( $user_id, 'billing_address_1', $street );
-        }
-        if ( ! empty( $postcode ) ) {
-            update_user_meta( $user_id, 'billing_postcode', $postcode );
-        }
-        if ( ! empty( $city ) ) {
-            update_user_meta( $user_id, 'billing_city', $city );
-        }
-        if ( ! empty( $phone ) ) {
-            update_user_meta( $user_id, 'billing_phone', $phone );
-        }
-        $new_user_created = true;
-    }
-}
-
-/**
- * Voeg meta-tags toe zodat Apple de pagina als een standalone web app ziet,
- * de pagina niet geïndexeerd wordt en inzoomen op mobiel wordt geblokkeerd.
- */
-add_action('wp_head', 'add_apple_web_app_meta_tags');
-function add_apple_web_app_meta_tags() {
-    echo '<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">' . "\n";
-    echo '<meta name="apple-mobile-web-app-capable" content="yes">' . "\n";
-    echo '<meta name="apple-mobile-web-app-status-bar-style" content="black">' . "\n";
-    echo '<meta name="robots" content="noindex">' . "\n";
-}
-
-/**
- * Forceer in de admin dat we 'page=week-overzicht' zetten
- * als er filterparameters aanwezig zijn maar de parameter 'page' ontbreekt of verkeerd is.
- */
-add_action( 'admin_init', 'fix_backend_filters_white_page' );
-function fix_backend_filters_white_page() {
-    if ( is_admin() ) {
-        $filter_params = array_intersect_key( $_GET, array(
-            'weeks_ahead'    => '',
-            'day'            => '',
-            'tag'            => '',
-            'show_cancelled' => '',
-            'custom_from'    => '',
-            'custom_to'      => '',
-            'combined_filter'=> '',
-        ) );
-        if ( ! empty( $filter_params ) ) {
-            $current_page = isset( $_GET['page'] ) ? sanitize_text_field( $_GET['page'] ) : '';
-            if ( $current_page !== 'week-overzicht' ) {
-                $args = $_GET;
-                $args['page'] = 'week-overzicht';
-                wp_redirect( add_query_arg( $args, admin_url( 'admin.php' ) ) );
-                exit;
-            }
-        }
-    }
-}
-
-/**
- * Helperfunctie om het $_FILES-array te herschikken voor meerdere uploads.
- */
-function restructure_files_array($file_post) {
-    $files = array();
-    $file_count = count($file_post['name']);
-    $file_keys = array_keys($file_post);
-    for ($i = 0; $i < $file_count; $i++) {
-         foreach($file_keys as $key) {
-              $files[$i][$key] = $file_post[$key][$i];
-         }
-    }
-    return $files;
-}
-
-/**
- * JavaScript-functie om extra PDF uploadblokken toe te voegen
- */
-?>
-<script>
-function addPdfUploadBlock(containerId) {
-    var container = document.getElementById(containerId);
-    var block = document.createElement('div');
-    block.className = 'pdf_upload_block';
-    block.style.marginBottom = '10px';
-    block.innerHTML = '<input type="file" name="custom_pdf_documents[]" accept="application/pdf"> <select name="custom_pdf_visibility[]"><option value="public">Openbaar</option><option value="private">Privé</option></select>';
-    container.appendChild(block);
-}
-</script>
-<?php
-
-/**
- * Genereer het volledige overzicht van WooCommerce-orders en custom events.
+ * Genereert de wekelijkse agenda van WooCommerce bestellingen en maatwerk bestellingen.
  *
- * Ondersteunt:
- * 1. Toevoegen, bijwerken en verwijderen van custom events.
- * 2. Filteren op week, dag, zoekterm en een custom periode (van/tot) zoals geselecteerd.
- *    (Standaard wordt de huidige week getoond.)
- * 3. Alleen orders en events binnen de gekozen periode tonen.
- * 4. Een gecombineerde filter (eventtype) via één dropdown.
- *    Mogelijke waarden:
- *       - Leeg: Alle events (zowel eigen als orders)
- *       - "eigen": Alleen eigen events (maatwerk)
- * 5. Bij maatwerk wordt het extra veld "Party Rental Besteld" getoond.
- * 6. PDF-documenten kunnen worden toegevoegd en verwijderd.
- *
- * @param bool $is_shortcode Indien true (frontend) wordt de weekfilter genegeerd bij een zoekterm.
- * @return string HTML-output.
+ * @param array $atts Shortcode attributen. Accepteert 'start_date' (YYYY/MM/DD).
+ * @return string De HTML output van de agenda.
  */
-function get_orders_current_week_output( $is_shortcode = false ) {
+function show_wc_orders_week_agenda($atts) {
+    error_log('show_wc_orders_week_agenda function called.'); // Debug log
 
-    // Beperk toegang: gebruikers met de rol "klant" krijgen geen toegang
+    // --- Toegangscontrole Logica ---
+    // Haal de ID van de huidige post/pagina op waar de shortcode wordt gebruikt
+    $current_post_id = get_the_ID();
+    // Haal de zichtbaarheidsinstelling voor de agenda op uit de post meta.
+    // De verwachte waarden zijn 'interne_medewerkers' of 'alle_werknemers'.
+    $agenda_visibility_setting = get_post_meta($current_post_id, '_agenda_visibility_setting', true);
+
+    // Standaard zichtbaarheid als deze niet is ingesteld op de pagina
+    if (empty($agenda_visibility_setting)) {
+        $agenda_visibility_setting = 'alle_werknemers'; // Standaard instellen op "Alle Werknemers"
+    }
+
     $current_user = wp_get_current_user();
-    if ( in_array( 'klant', (array) $current_user->roles ) ) {
-        wp_die("U heeft geen toegang tot deze pagina.");
+    $user_roles = (array) $current_user->roles;
+
+    // Verbeterde styling voor meldingen
+    $access_denied_style = 'style="padding: 20px; text-align: center; color: #fff; background-color: #EF5350; border-radius: 12px; box-shadow: 0 4px 8px rgba(0,0,0,0.2); font-size: 1.1em; border: 2px solid #D32F2F;"';
+    $access_denied_icon = '<span style="margin-right: 10px; font-size: 1.5em; vertical-align: middle;">&#x26A0;</span>'; // Waarschuwingsicoon
+
+    // 1. Controleer of de gebruiker de rol 'customer' heeft. Klanten mogen deze pagina niet zien.
+    if (in_array('customer', $user_roles)) {
+        return '<div ' . $access_denied_style . '>' . $access_denied_icon . 'U heeft geen toegang tot deze pagina.</div>';
     }
 
-    // Haal custom events op (éénmalig)
-    $custom_events = get_option('custom_events', array());
-
-    /* --- Custom event: Toevoegen --- */
-    if ( isset($_POST['custom_event_submit']) ) {
-        $event_number = sanitize_text_field( $_POST['custom_event_number'] );
-        $event_id = ! empty($event_number) ? $event_number : ( time() . rand(100,999) );
-        $event = array(
-            'event_id'                    => $event_id,
-            'status'                      => sanitize_text_field( $_POST['custom_status'] ),
-            'option_date'                 => isset($_POST['custom_option_date']) ? sanitize_text_field( $_POST['custom_option_date'] ) : '',
-            'event_number'                => $event_number,
-            'first_name'                  => sanitize_text_field( $_POST['custom_first_name'] ),
-            'last_name'                   => sanitize_text_field( $_POST['custom_last_name'] ),
-            'company'                     => sanitize_text_field( $_POST['custom_company'] ),
-            'address'                     => sanitize_text_field( $_POST['custom_address'] ),
-            'postcode'                    => sanitize_text_field( $_POST['custom_postcode'] ),
-            'city'                        => sanitize_text_field( $_POST['custom_city'] ),
-            'email'                       => sanitize_email( $_POST['custom_email'] ),
-            'phone'                       => sanitize_text_field( $_POST['custom_phone'] ),
-            'reference'                   => isset($_POST['custom_reference']) ? sanitize_text_field( $_POST['custom_reference'] ) : '',
-            'date'                        => sanitize_text_field( $_POST['custom_date'] ),
-            'start_time'                  => sanitize_text_field( $_POST['custom_start_time'] ),
-            'end_time'                    => sanitize_text_field( $_POST['custom_end_time'] ),
-            'note'                        => sanitize_textarea_field( $_POST['custom_note'] ),
-            'staff'                       => sanitize_text_field( $_POST['custom_staff'] ),
-            'personen'                    => isset($_POST['custom_personen']) ? sanitize_text_field( $_POST['custom_personen'] ) : '',
-            'custom_party_rental_besteld' => isset($_POST['custom_party_rental_besteld']) ? sanitize_text_field( $_POST['custom_party_rental_besteld'] ) : '',
-        );
-        // Logboek: wie maakt het event aan?
-        $event['created_by'] = get_current_user_id();
-        $event['last_modified_by'] = get_current_user_id();
-        $event['created_at'] = current_time('mysql');
-        $event['last_modified_at'] = current_time('mysql');
-        
-        $pdfs = array();
-        if ( ! empty($_FILES['custom_pdf_documents']['name'][0]) ) {
-            require_once( ABSPATH . 'wp-admin/includes/file.php' );
-            $uploaded_files = $_FILES['custom_pdf_documents'];
-            $files = restructure_files_array($uploaded_files);
-            $pdf_visibility = isset($_POST['custom_pdf_visibility']) ? $_POST['custom_pdf_visibility'] : array();
-            foreach ($files as $index => $file) {
-                 $upload_overrides = array('test_form' => false);
-                 $movefile = wp_handle_upload( $file, $upload_overrides );
-                 if ( $movefile && !isset($movefile['error']) ) {
-                      $visibility = isset($pdf_visibility[$index]) ? $pdf_visibility[$index] : 'public';
-                      $pdfs[] = array(
-                          'url'         => $movefile['url'],
-                          'upload_date' => date('d/m/Y'),
-                          'visibility'  => $visibility,
-                      );
-                 }
-            }
+    // 2. Controleer de zichtbaarheid op basis van de ingestelde waarde en gebruikersrollen
+    if ($agenda_visibility_setting === 'interne_medewerkers') {
+        // Alleen beheerders mogen de pagina zien als de instelling 'interne_medewerkers' is
+        if (!current_user_can('manage_options')) { // 'manage_options' is een capabiliteit die typisch hoort bij beheerders
+            return '<div ' . $access_denied_style . '>' . $access_denied_icon . 'Toegang geweigerd. Alleen interne medewerkers hebben toegang.</div>';
         }
-        $event['pdf_documents'] = $pdfs;
-        $custom_events[$event_id] = $event;
-        update_option('custom_events', $custom_events);
-        $cache_key = 'ocw_output_' . md5( serialize($_GET) );
-        delete_transient( $cache_key );
-        wp_redirect( remove_query_arg( array('custom_event_submit') ) );
-        exit;
-    }
-
-    /* --- Custom event: Updaten --- */
-    if ( isset($_POST['custom_event_update']) ) {
-        $event_id = sanitize_text_field( $_POST['custom_event_id'] );
-        if ( isset($custom_events[$event_id]) ) {
-            $event = array(
-                'event_id'                    => $event_id,
-                'status'                      => sanitize_text_field( $_POST['custom_status'] ),
-                'option_date'                 => isset($_POST['custom_option_date']) ? sanitize_text_field( $_POST['custom_option_date'] ) : '',
-                'event_number'                => sanitize_text_field( $_POST['custom_event_number'] ),
-                'first_name'                  => sanitize_text_field( $_POST['custom_first_name'] ),
-                'last_name'                   => sanitize_text_field( $_POST['custom_last_name'] ),
-                'company'                     => sanitize_text_field( $_POST['custom_company'] ),
-                'address'                     => sanitize_text_field( $_POST['custom_address'] ),
-                'postcode'                    => sanitize_text_field( $_POST['custom_postcode'] ),
-                'city'                        => sanitize_text_field( $_POST['custom_city'] ),
-                'email'                       => sanitize_email( $_POST['custom_email'] ),
-                'phone'                       => sanitize_text_field( $_POST['custom_phone'] ),
-                'reference'                   => isset($_POST['custom_reference']) ? sanitize_text_field( $_POST['custom_reference'] ) : '',
-                'date'                        => sanitize_text_field( $_POST['custom_date'] ),
-                'start_time'                  => sanitize_text_field( $_POST['custom_start_time'] ),
-                'end_time'                    => sanitize_text_field( $_POST['custom_end_time'] ),
-                'note'                        => sanitize_textarea_field( $_POST['custom_note'] ),
-                'staff'                       => sanitize_text_field( $_POST['custom_staff'] ),
-                'personen'                    => isset($_POST['custom_personen']) ? sanitize_text_field( $_POST['custom_personen'] ) : '',
-                'custom_party_rental_besteld' => isset($_POST['custom_party_rental_besteld']) ? sanitize_text_field( $_POST['custom_party_rental_besteld'] ) : '',
-            );
-            // Update logboek: alleen last modified aanpassen
-            $event['last_modified_by'] = get_current_user_id();
-            $event['last_modified_at'] = current_time('mysql');
-            
-            $pdfs = isset($custom_events[$event_id]['pdf_documents']) ? $custom_events[$event_id]['pdf_documents'] : array();
-            if ( ! empty($_FILES['custom_pdf_documents']['name'][0]) ) {
-                require_once( ABSPATH . 'wp-admin/includes/file.php' );
-                $uploaded_files = $_FILES['custom_pdf_documents'];
-                $files = restructure_files_array($uploaded_files);
-                $pdf_visibility = isset($_POST['custom_pdf_visibility']) ? $_POST['custom_pdf_visibility'] : array();
-                foreach ($files as $index => $file) {
-                     $upload_overrides = array('test_form' => false);
-                     $movefile = wp_handle_upload( $file, $upload_overrides );
-                     if ( $movefile && !isset($movefile['error']) ) {
-                          $visibility = isset($pdf_visibility[$index]) ? $pdf_visibility[$index] : 'public';
-                          $pdfs[] = array(
-                              'url'         => $movefile['url'],
-                              'upload_date' => date('d/m/Y'),
-                              'visibility'  => $visibility,
-                          );
-                     }
-                }
-            }
-            $event['pdf_documents'] = $pdfs;
-            $custom_events[$event_id] = $event;
-            update_option('custom_events', $custom_events);
-            $cache_key = 'ocw_output_' . md5( serialize($_GET) );
-            delete_transient( $cache_key );
-        }
-        wp_redirect( remove_query_arg( array('custom_event_update') ) );
-        exit;
-    }
-
-    /* --- Custom event: Verwijderen --- */
-    if ( isset($_GET['delete_event']) ) {
-        // Alleen beheerder mag verwijderen
-        if ( current_user_can('manage_options') ) {
-            $event_id = sanitize_text_field( $_GET['delete_event'] );
-            if ( isset($custom_events[$event_id]) ) {
-                unset($custom_events[$event_id]);
-                update_option('custom_events', $custom_events);
-                $cache_key = 'ocw_output_' . md5( serialize($_GET) );
-                delete_transient( $cache_key );
-                wp_redirect( remove_query_arg('delete_event') );
-                exit;
-            }
+    } elseif ($agenda_visibility_setting === 'alle_werknemers') {
+        // Alle ingelogde gebruikers (die geen klant zijn, wat hierboven al is gefilterd) mogen de pagina zien
+        if (!is_user_logged_in()) {
+            return '<div ' . $access_denied_style . '>' . $access_denied_icon . 'U moet ingelogd zijn om deze pagina te bekijken.</div>';
         }
     }
-    
-    /* --- Custom event: PDF verwijderen --- */
-    if ( isset($_GET['delete_pdf_event']) && isset($_GET['delete_pdf_index']) ) {
-        // Alleen beheerder mag PDF's verwijderen
-        if ( current_user_can('manage_options') ) {
-            $event_id = sanitize_text_field( $_GET['delete_pdf_event'] );
-            $pdf_index = intval( $_GET['delete_pdf_index'] );
-            if ( isset($custom_events[$event_id]) && isset($custom_events[$event_id]['pdf_documents'][$pdf_index]) ) {
-                unset($custom_events[$event_id]['pdf_documents'][$pdf_index]);
-                $custom_events[$event_id]['pdf_documents'] = array_values($custom_events[$event_id]['pdf_documents']);
-                update_option('custom_events', $custom_events);
-                if ( is_admin() ) {
-                    wp_redirect( admin_url('admin.php?page=week-overzicht') );
-                } else {
-                    wp_redirect( remove_query_arg( array('delete_pdf_event','delete_pdf_index') ) );
-                }
-                exit;
-            }
-        }
-    }
-    
-    // Verkrijg de week-offset, dag-, zoek- en custom datum filter
-    $weeks_ahead  = isset( $_GET['weeks_ahead'] ) ? intval( $_GET['weeks_ahead'] ) : 0;
-    $filter_day   = isset( $_GET['day'] )         ? sanitize_text_field( $_GET['day'] ) : '';
-    $filter_order = isset( $_GET['order_search'] ) ? sanitize_text_field( $_GET['order_search'] ) : '';
-    
-    // Custom datum filter: gebruik de door de gebruiker gespecificeerde periode (anders huidige week met offset)
-    if ( isset($_GET['custom_from']) && isset($_GET['custom_to']) && !empty($_GET['custom_from']) && !empty($_GET['custom_to']) ) {
-        $start_date = sanitize_text_field( $_GET['custom_from'] );
-        $end_date   = sanitize_text_field( $_GET['custom_to'] );
-    } else {
-        $start_date = date( 'Y-m-d', strtotime( 'monday this week + ' . $weeks_ahead . ' weeks' ) );
-        $end_date   = date( 'Y-m-d', strtotime( 'friday this week + ' . $weeks_ahead . ' weeks' ) );
-    }
-    $week_number = date( 'W', strtotime( $start_date ) );
+    // Einde toegangscontrolelogica
 
-    // De gecombineerde filter via dropdown:
-    // Mogelijke waarden: "", "eigen"
-    $combined_filter = isset($_GET['combined_filter']) ? sanitize_text_field( $_GET['combined_filter'] ) : '';
+    // Haal de startdatum op uit de attributen, anders standaard naar deze week maandag.
+    $atts = shortcode_atts(
+        array(
+            'start_date' => date('Y/m/d', strtotime('monday this week')),
+        ),
+        $atts,
+        'wc_orders_week_agenda'
+    );
+	
+    // **TOEGEVOEGD**: dag‐filter vanuit URL (?day=YYYY-MM-DD)
+$day_filter = isset($_GET['filter_day']) 
+    ? sanitize_text_field($_GET['filter_day']) 
+    : '';
+	
+	
+    $current_week_start_timestamp = strtotime($atts['start_date']);
+    $week_start = strtotime('monday this week', $current_week_start_timestamp);
+    $week_end = strtotime('sunday this week 23:59:59', $current_week_start_timestamp);
 
-    $show_cancelled = ! isset( $_GET['hide_cancelled'] );
-    $post_statuses = $show_cancelled
-        ? array( 'wc-completed', 'wc-processing', 'wc-on-hold', 'wc-cancelled' )
-        : array( 'wc-completed', 'wc-processing', 'wc-on-hold' );
-    $day_map = array(
-        1 => 'maandag',
-        2 => 'dinsdag',
-        3 => 'woensdag',
-        4 => 'donderdag',
-        5 => 'vrijdag',
-        6 => 'zaterdag',
-        7 => 'zondag',
+    $agenda = array();
+
+    // Standaard statussen voor initiële weergave
+    $wc_initial_statuses = array_keys(wc_get_order_statuses());
+
+    // Alle statussen voor maatwerk, inclusief 'geaccepteerd' en 'afgewezen'
+    $maatwerk_initial_statuses = array('nieuw', 'in-optie', 'in_behandeling', 'bevestigd', 'afgerond', 'publish', 'geannuleerd', 'geaccepteerd', 'afgewezen');
+
+    // --- 1. Query WooCommerce bestellingen ---
+    $args_wc = array(
+        'post_type'      => 'shop_order',
+        'posts_per_page' => -1,
+        'post_status'    => $wc_initial_statuses, // Gebruik alle statussen
+        'meta_query'     => array(
+            array(
+                'key'     => 'pi_system_delivery_date', // Correcte meta key voor leveringsdatum
+                'value'   => array(date('Y/m/d', $week_start), date('Y/m/d', $week_end)),
+                'compare' => 'BETWEEN',
+                'type'    => 'DATE'
+            )
+        )
     );
 
-    // Verwerk WooCommerce-orders
-    if ( empty($filter_order) ) {
-        $args = array(
-            'post_type'      => 'shop_order',
-            'post_status'    => $post_statuses,
-            'posts_per_page' => -1,
-            'orderby'        => 'meta_value',
-            'order'          => 'ASC',
-            'no_found_rows'  => true,
-            'meta_query'     => array(
-                array(
-                    'key'     => 'pi_system_delivery_date',
-                    'value'   => array( $start_date, $end_date ),
-                    'type'    => 'DATE',
-                    'compare' => 'BETWEEN',
-                ),
-            ),
-            'meta_key'       => 'pi_system_delivery_date',
-            'fields'         => 'ids',
+    $wc_orders = get_posts($args_wc);
+
+    foreach ($wc_orders as $order_post) {
+        $order_id = $order_post->ID;
+        $order = wc_get_order($order_id);
+
+        if (!$order) {
+            continue;
+        }
+
+        $delivery_date = get_post_meta($order_id, 'pi_system_delivery_date', true);
+        $delivery_time = get_post_meta($order_id, 'pi_delivery_time', true);
+        $eindtijd      = get_post_meta($order_id, 'order_eindtijd', true);
+        $locatie       = get_post_meta($order_id, 'order_location', true);
+        $personen      = get_post_meta($order_id, 'order_personen', true);
+        $order_reference = get_post_meta($order_id, 'order_reference', true);
+        $billing_company = $order->get_billing_company();
+        $customer_note = $order->get_customer_note(); // Haal klantnotitie op voor indicator
+
+        if (!$delivery_date) continue;
+        if (!isset($agenda[$delivery_date])) $agenda[$delivery_date] = array();
+
+        $agenda[$delivery_date][] = array(
+            'type'                      => 'woocommerce', // Toegevoegd type voor onderscheid
+            'order_id'                  => $order_id,
+            'sequential_order_number'   => $order->get_order_number(),
+            'tijd'                      => $delivery_time ? $delivery_time : '�',
+            'eindtijd'                  => $eindtijd ? $eindtijd : '',
+            'locatie'                   => $locatie,
+            'personen'                  => $personen,
+            'order_reference'           => $order_reference,
+            'post_status'               => $order_post->post_status,
+            'billing_company'           => $billing_company,
+            'has_note'                  => !empty($customer_note) // Voeg 'has_note' vlag toe
         );
-    } else {
-        // Als er een zoekterm is, haal alle orders op (datumfilter weghalen)
-        $args = array(
-            'post_type'      => 'shop_order',
-            'post_status'    => $post_statuses,
-            'posts_per_page' => -1,
-            'orderby'        => 'meta_value',
-            'order'          => 'ASC',
-            'no_found_rows'  => true,
-            'meta_key'       => 'pi_system_delivery_date',
-            'fields'         => 'ids',
-        );
     }
-    $orders_query = new WP_Query( $args );
-    $order_list = array();
-    if ( $orders_query->have_posts() ) {
-        foreach ( $orders_query->posts as $o_id ) {
-            $order = wc_get_order( $o_id );
-            if ( ! $order ) continue;
-            $order_date = get_post_meta( $order->get_id(), 'pi_system_delivery_date', true );
-            if ( ! $order_date ) continue;
-            // Alleen toepassen als er geen zoekterm is
-            if ( empty($filter_order) ) {
-                if ( strtotime($order_date) < strtotime($start_date) || strtotime($order_date) > strtotime($end_date) ) {
-                    continue;
-                }
-            }
-            // Indien er een zoekterm is, filter order op nummer, referentie of bedrijfsnaam
-            if ( ! empty($filter_order) ) {
-                $order_number = $order->get_order_number();
-                $order_reference = get_post_meta( $order->get_id(), 'order_reference', true );
-                $billing_company = $order->get_billing_company();
-                if (
-                    stripos($order_number, $filter_order) === false &&
-                    stripos($order_reference, $filter_order) === false &&
-                    stripos($billing_company, $filter_order) === false
-                ) {
-                    continue;
-                }
-            }
-            $order_list[] = $order;
+    wp_reset_postdata(); // Reset postdata na WooCommerce query
+
+    // --- 2. Query Maatwerk bestellingen ---
+    $args_maatwerk = array(
+        'post_type'      => 'maatwerk_bestelling', // Custom Post Type van Maatwerk
+        'posts_per_page' => -1,
+        'post_status'    => $maatwerk_initial_statuses, // Gebruik alle statussen
+        'meta_query'     => array(
+            array(
+                'key'     => 'datum', // De meta key voor de datum in maatwerk
+                'value'   => array(date('Y-m-d', $week_start), date('Y-m/d', $week_end)),
+                'compare' => 'BETWEEN',
+                'type'    => 'DATE' // Houd type als DATE voor juiste vergelijking
+            )
+        )
+    );
+
+    $maatwerk_orders = get_posts($args_maatwerk);
+    error_log('DEBUG: Found ' . count($maatwerk_orders) . ' maatwerk orders for week ' . date('Y/m/d', $week_start) . ' - ' . date('Y/m/d', $week_end)); // Nieuwe debug log voor maatwerk bestellingen
+
+    foreach ($maatwerk_orders as $m_order_post) {
+        $m_order_id = $m_order_post->ID;
+
+        // Haal de maatwerk meta-data op zoals gespecificeerd
+        $order_nummer            = get_post_meta($m_order_id, 'order_nummer', true);
+        $maatwerk_voornaam       = get_post_meta($m_order_id, 'maatwerk_voornaam', true);
+        $maatwerk_achternaam     = get_post_meta($m_order_id, 'maatwerk_achternaam', true);
+        $maatwerk_email          = get_post_meta($m_order_id, 'maatwerk_email', true);
+        $maatwerk_telefoonnummer = get_post_meta($m_order_id, 'maatwerk_telefoonnummer', true);
+        $bedrijfsnaam            = get_post_meta($m_order_id, 'bedrijfsnaam', true);
+        $straat_huisnummer       = get_post_meta($m_order_id, 'straat_huisnummer', true);
+        $postcode                = get_post_meta($m_order_id, 'postcode', true);
+        $plaats                  = get_post_meta($m_order_id, 'plaats', true);
+        $referentie              = get_post_meta($m_order_id, 'referentie', true);
+        $datum                   = get_post_meta($m_order_id, 'datum', true); // Dit is de leveringsdatum
+        $start_tijd              = get_post_meta($m_order_id, 'start_tijd', true);
+        $eind_tijd               = get_post_meta($m_order_id, 'eind_tijd', true);
+        $aantal_medewerkers      = get_post_meta($m_order_id, 'aantal_medewerkers', true);
+        $aantal_personen         = get_post_meta($m_order_id, 'aantal_personen', true);
+        $opmerkingen             = get_post_meta($m_order_id, '_maatwerk_bestelling_opmerkingen', true); // Aangepast naar de correcte meta key
+        $order_status_maatwerk   = get_post_meta($m_order_id, 'order_status', true); // Haal de daadwerkelijke maatwerk order status op
+        $optie_geldig_tot        = get_post_meta($m_order_id, 'optie_geldig_tot', true); // Haal de optie geldig tot datum op
+		$important_opmerking 	 = get_post_meta($m_order_id, 'important_opmerking', true);
+
+		// Mappen naar het agenda-formaat
+        $delivery_date_maatwerk = $datum; // Gebruik de 'datum' meta als delivery_date
+
+        // Robuuste datum parsing voor de agenda array key, voor het geval de opgeslagen 'datum' niet in Y-MM-DD is
+        $parsed_date = DateTime::createFromFormat('Y-m-d', $datum); // Probeer Y-MM-DD
+        if (!$parsed_date) {
+            $parsed_date = DateTime::createFromFormat('d-m-Y', $datum); // Probeer DD-MM-YYYY
         }
-    }
-    
-    // Verwerk custom events (datumfilter alleen toepassen als er geen zoekterm is; zoekterm filter altijd toepassen)
-    $custom_events = array_filter($custom_events, function($event) use ($start_date, $end_date, $filter_order) {
-        if ( empty($event['date']) ) return false;
-        if ( empty($filter_order) && (strtotime($event['date']) < strtotime($start_date) || strtotime($event['date']) > strtotime($end_date)) ) return false;
-        if ( ! empty($filter_order) ) {
-            return (stripos($event['event_number'], $filter_order) !== false ||
-                    stripos($event['reference'], $filter_order) !== false ||
-                    stripos($event['company'], $filter_order) !== false);
+        if (!$parsed_date) {
+            $parsed_date = DateTime::createFromFormat('m/d/Y', $datum); // Probeer MM/DD/YYYY (Amerikaans)
         }
-        return true;
-    });
-    
-    /* --- Combineer WooCommerce-orders en custom events --- */
-    $combined = array();
-    foreach ( $order_list as $order ) {
-        $date = get_post_meta( $order->get_id(), 'pi_system_delivery_date', true );
-        $combined[] = array( 'type' => 'order', 'date' => $date, 'data' => $order );
-    }
-    foreach ( $custom_events as $event ) {
-        $combined[] = array( 'type' => 'event', 'date' => $event['date'], 'data' => $event );
-    }
-    
-    // Pas dagfilter toe indien ingesteld
-    if ( ! empty($filter_day) ) {
-        $combined = array_filter($combined, function($item) use ($filter_day) {
-            $day = strtolower(date_i18n('l', strtotime($item['date'])));
-            return ($day === strtolower($filter_day));
-        });
-    }
-    
-    // Als er een gecombineerde filter is ('eigen') toon dan alleen maatwerk events
-    if ( ! empty($combined_filter) ) {
-        if ( $combined_filter === 'eigen' ) {
-            $combined = array_filter($combined, function($item) {
-                return ($item['type'] === 'event');
-            });
+        if ($parsed_date) {
+            $delivery_date_maatwerk = $parsed_date->format('Y/m/d'); // Zorg voor Y/MM/DD voor de agenda key
+        } else {
+            error_log('DEBUG: Kon maatwerk datum niet parsen: ' . $datum . ' voor order ID: ' . $m_order_id);
+            continue; // Overslaan als datum niet betrouwbaar geparsed kan worden
         }
+
+
+        $delivery_time_maatwerk = $start_tijd;
+        $eindtijd_maatwerk      = $eind_tijd;
+        $locatie_maatwerk       = (!empty($straat_huisnummer) ? $straat_huisnummer . ', ' : '') . $plaats; // Combineer straat en plaats
+        $personen_maatwerk      = !empty($aantal_personen) ? $aantal_personen : (!empty($aantal_medewerkers) ? $aantal_medewerkers : ''); // Gebruik personen, anders medewerkers
+        $order_reference_maatwerk = $referentie;
+        $billing_company_maatwerk = $bedrijfsnaam;
+        // Gebruik de daadwerkelijke maatwerk order status indien beschikbaar, anders fallback
+        $display_post_status_maatwerk = !empty($order_status_maatwerk) ? $order_status_maatwerk : 'mw-completed';
+
+        if (!$delivery_date_maatwerk) continue;
+        if (!isset($agenda[$delivery_date_maatwerk])) $agenda[$delivery_date_maatwerk] = array();
+
+$agenda[$delivery_date_maatwerk][] = array(
+    'type'                      => 'maatwerk',
+    'order_id'                  => $m_order_id,
+    'sequential_order_number'   => !empty($order_nummer) ? $order_nummer : 'MW-' . $m_order_id,
+    'tijd'                      => $delivery_time_maatwerk ? $delivery_time_maatwerk : '🕒',
+    'eindtijd'                  => $eindtijd_maatwerk ? $eindtijd_maatwerk : '',
+    'locatie'                   => $locatie_maatwerk,
+    'personen'                  => $personen_maatwerk,
+    'order_reference'           => $order_reference_maatwerk,
+    'post_status'               => $display_post_status_maatwerk,
+    'billing_company'           => $billing_company_maatwerk,
+    'maatwerk_voornaam'         => $maatwerk_voornaam,
+    'maatwerk_achternaam'       => $maatwerk_achternaam,
+    'maatwerk_email'            => $maatwerk_email,
+    'maatwerk_telefoonnummer'   => $maatwerk_telefoonnummer,
+    'postcode'                  => $postcode,
+    'opmerkingen'               => $opmerkingen,
+    'important_opmerking'       => $important_opmerking,
+    'aantal_medewerkers'        => $aantal_medewerkers,
+    'aantal_personen_raw'       => $aantal_personen,
+    'optie_geldig_tot'          => $optie_geldig_tot,
+    'has_note'                  => !empty($opmerkingen)
+);
     }
-    
-    // Sorteer de gecombineerde lijst:
-    // Als er een zoekterm is, sorteer dan aflopend (nieuwste eerst)
-    // Anders sorteren we oplopend (vroegste naar laatste)
-    if ( ! empty($filter_order) ) {
-        usort($combined, function($a, $b) {
-            $dateDiff = strtotime($b['date']) - strtotime($a['date']);
-            if ($dateDiff === 0) {
-                $timeA = ($a['type'] === 'order') ? strtotime($a['data']->get_meta('pi_delivery_time')) : strtotime($a['data']['start_time']);
-                $timeB = ($b['type'] === 'order') ? strtotime($b['data']->get_meta('pi_delivery_time')) : strtotime($b['data']['start_time']);
-                return $timeB - $timeA;
-            }
-            return $dateDiff;
-        });
-    } else {
-        usort($combined, function($a, $b) {
-            $dateDiff = strtotime($a['date']) - strtotime($b['date']);
-            if ($dateDiff === 0) {
-                $timeA = ($a['type'] === 'order') ? strtotime($a['data']->get_meta('pi_delivery_time')) : strtotime($a['data']['start_time']);
-                $timeB = ($b['type'] === 'order') ? strtotime($b['data']->get_meta('pi_delivery_time')) : strtotime($b['data']['start_time']);
-                return $timeA - $timeB;
-            }
-            return $dateDiff;
-        });
-    }
-    
-    ob_start();
-    ?>
-    <!-- CSS Styling -->
-    <style>
-        body { font-family: Arial, sans-serif; color: #f1f1f1; }
-        html, body { -webkit-touch-callout: none; -webkit-user-select: none; }
-        .filter-bar select, .filter-bar input, .filter-bar option, .filter-bar a { color: #fff !important; }
-        .orders-container { margin-top: 20px; }
-        .order-card { background-color: #2e2e3a; border-radius: 8px; padding: 15px; margin-bottom: 20px; position: relative; }
-        .order-card-header { display: flex; align-items: center; justify-content: space-between; }
-        .order-badge { border-radius: 4px; padding: 5px 10px; font-weight: bold; }
-        .order-badge.default { background-color: #009640; }
-        .order-badge.cancelled { background-color: #ff0000; }
-        .order-badge.event { color: #fff; }
-        .order-badge.event.event-in-optie { background-color: #FFA500; }
-        .order-badge.event.event-akkoord { background-color: #009640; }
-        /* Aangepast: event geannuleerd (maatwerk) wordt rood */
-        .order-badge.event.event-geannuleerd { background-color: #ff0000; }
-        .option-badge { background-color: #4f9d9d; border-radius: 12px; padding: 2px 6px; font-size: 0.7em; font-weight: bold; color: #fff; margin-left: 5px; }
-        .option-badge.expired { background-color: #ff0000; }
-        .action-buttons { display: flex; gap: 5px; margin-left: auto; }
-        .pdf-button, .quick-button, .details-button, .edit-button, .delete-button { cursor: pointer; border: 1px solid #009640; padding: 6px 12px; border-radius: 20px; font-weight: bold; font-size: 0.9em; text-decoration: none; background-color: transparent; color: #fff; transition: background-color 0.3s, color 0.3s; }
-        .pdf-button:hover, .quick-button:hover, .details-button:hover, .edit-button:hover { background-color: #009640; }
-        .delete-button { border: 1px solid red; background-color: red; color: #fff; }
-        .delete-button:hover { background-color: darkred; }
-        .order-card-body { margin-top: 10px; }
-        .order-card-body div { margin-bottom: 10px; }
-        .filter-bar { margin: 20px 0; background-color: #2e2e3a; padding: 10px; border-radius: 4px; }
-        .filter-bar form { display: flex; flex-direction: column; gap: 10px; }
-        .filter-row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
-        .filter-row label { font-weight: bold; color: #fff; }
-        .filter-row select, .filter-row input[type="text"], .filter-row input[type="date"] { background-color: #1e1e2d; color: #fff; border: 1px solid #444; border-radius: 4px; padding: 5px 8px; font-weight: bold; transition: background-color 0.2s, color 0.2s; }
-        .filter-row select:hover, .filter-row select:focus, .filter-row input[type="text"]:hover, .filter-row input[type="text"]:focus, .filter-row input[type="date"]:hover, .filter-row input[type="date"]:focus { background-color: #444; color: #fff; outline: none; }
-        .filter-row select option { background-color: #1e1e2d; color: #fff; }
-        .cancelled-toggle-button { background-color: #ff0000; border: 1px solid #ff0000; padding: 6px 12px; border-radius: 10px; text-decoration: none; font-weight: bold; transition: background-color 0.3s; font-size: 0.9em; color: #fff; }
-        .cancelled-toggle-button:hover { background-color: #ff4040; }
-        .reset-filters-button { background-color: #808080; border: 1px solid #808080; padding: 6px 12px; border-radius: 10px; text-decoration: none; font-weight: bold; transition: background-color 0.3s; font-size: 0.9em; color: #fff; }
-        .reset-filters-button:hover { background-color: #696969; }
-        /* Nieuwe styling voor knoppen naast elkaar in de filterbar */
-        .filter-buttons { display: flex; gap: 10px; justify-content: flex-end; align-items: center; flex-wrap: wrap; }
-        .navigation-buttons { text-align: center; margin-top: 20px; }
-        .navigation-buttons a { margin: 0 auto; display: inline-block; background-color: #009640; border: 1px solid #009640; padding: 10px 20px; border-radius: 4px; text-decoration: none; font-weight: bold; transition: background-color 0.3s, color 0.3s; color: #fff; }
-        .navigation-buttons a:hover { background-color: #006630; }
-        .popup-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.8); display: none; justify-content: center; align-items: center; z-index: 9999; }
-        .popup-content { background-color: #1e1e2d; padding: 30px; border-radius: 8px; width: 90%; max-width: 800px; box-shadow: 0 4px 8px rgba(0,0,0,0.5); color: #fff; max-height: 90vh; overflow-y: auto; text-align: left; }
-        .popup-content h3 { color: #009640; font-weight: bold; }
-        .close-popup { cursor: pointer; float: right; font-weight: bold; font-size: 20px; color: #fff; }
-        #loading-overlay { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 2000; }
-        #loading-overlay .spinner { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); font-size: 3em; color: #fff; }
-        @media (max-width: 1024px) {
-            .edit-button, .delete-button { display: none !important; }
+    wp_reset_postdata(); // Reset postdata na Maatwerk query
+
+    // Bereken timestamps voor navigatieknoppen
+    $prev_week_timestamp = strtotime('-1 week', $current_week_start_timestamp);
+    $next_week_timestamp = strtotime('+1 week', $current_week_start_timestamp);
+
+    // Start HTML output voor de weekagenda container
+    $output = '<div class="wc-weekagenda-wrapper" data-agenda-visibility="' . esc_attr($agenda_visibility_setting) . '">';
+
+    // De CSS-stijl wordt nu hier EENMALIG toegevoegd
+    $output .= '<style>
+.wc-nav-button.icon-only {
+    display: flex; /* Maakt de knop een flex-container */
+    justify-content: center; /* Centreert de inhoud (het icoon) horizontaal */
+    align-items: center; /* Centreert de inhoud (het icoon) verticaal */
+    padding: 8px; /* Pas deze waarde aan om de gewenste ruimte rondom het icoon te creëren */
+    /* Optioneel: Stel een vaste breedte en hoogte in voor perfect vierkante knoppen */
+    width: 32px; 
+    height: 32px;
+}
+
+.wc-nav-button.icon-only svg {
+    margin: 0 !important; /* Verwijdert eventuele resterende marges op de SVG */
+}
+        /* Importeer Google Font - Roboto wordt veel gebruikt in Google-producten */
+        @import url("https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&display=swap");
+
+        .wc-weekagenda-wrapper {
+            max-width: 100%;
+            margin: 20px auto;
+            font-family: "Roboto", sans-serif;
+            color: #fff;
         }
+
+        .wc-agenda-navigation {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+            padding: 10px 0;
+            background-color: transparent;
+            border-bottom: none;
+        }
+        .wc-nav-button {
+            background-color: #4CAF50;
+            color: #fff;
+            border: none;
+            padding: 8px 12px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 0.9em;
+            font-weight: bold;
+            transition: background-color 0.3s ease;
+            margin-left: 10px;
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+        .wc-nav-button:first-child {
+            margin-left: 0;
+        }
+        .wc-nav-button:hover {
+            background-color: #45a049;
+        }
+    #wc-hide-cancelled.wc-nav-button {
+        background-color: #F44336;  /* Felrood */
+        color: #fff;
+    }
+    #wc-hide-cancelled.wc-nav-button:hover {
+        background-color: #D32F2F;  /* Iets donkerder bij hover */
+    }
+        .wc-current-week-display {
+            font-size: 1.2em;
+            font-weight: 500;
+            color: #fff;
+            flex-grow: 1;
+            text-align: center;
+            margin-bottom: 0;
+        }
+        .wc-nav-elements-right, .wc-nav-elements-left {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+        .wc-nav-elements-left {
+            margin-right: auto;
+        }
+        .wc-nav-elements-right {
+            margin-left: auto;
+        }
+
         @media (max-width: 768px) {
-            .filter-bar form { font-size: 14px; }
-            .navigation-buttons a { padding: 8px 12px; font-size: 14px; }
-            .popup-content { width: 95%; max-width: 95%; padding: 15px; }
+            .wc-agenda-navigation {
+                flex-direction: column;
+                align-items: center;
+            }
+            .wc-current-week-display {
+                margin-bottom: 10px;
+            }
+            .wc-nav-elements-left,
+            .wc-nav-elements-right {
+                flex-basis: 100%;
+                justify-content: center;
+                margin-bottom: 10px;
+                margin-left: 0;
+                margin-right: 0;
+            }
         }
-        .wrap h1 { color: #fff; }
-        .order-details, .event-details { display: none; }
-        .event-form-group { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 10px; }
-        .event-form-group > div { flex: 1 1 48%; }
-        .event-form-group.full > div { flex: 1 1 100%; }
-        .event-form-group label { display: block; margin-bottom: 5px; font-weight: bold; }
-        .event-form-group input, .event-form-group textarea, .event-form-group select {
-            width: 100%; padding: 8px; border: 1px solid #fff; border-radius: 4px;
-            background-color: #333; color: #fff;
+
+        .wc-arrow-button {
+            background-color: #4CAF50;
+            border: none;
+            color: #fff;
+            font-size: 0.9em;
+            padding: 8px 12px;
+            font-weight: bold;
+            border-radius: 5px;
+            transition: background-color 0.3s ease;
+            margin: 0;
         }
-        input, textarea, select {
-            background-color: #333 !important; color: #fff !important; border: 1px solid #fff !important;
+        .wc-arrow-button:hover {
+            background-color: #45a049;
+            color: #fff;
         }
-        .form-section-title {
-            width: 100%; padding: 10px; background-color: #444; border-radius: 4px;
-            margin-bottom: 10px; font-weight: bold; text-align: center;
+
+        .wc-today-button {
+            margin-right: 10px;
         }
-        .splitter { border-bottom: 1px solid #444; margin: 15px 0; }
-        .reference-block { font-weight: normal; text-align: left; margin-bottom: 10px; }
-        .user-selector-container { border: 1px solid #444; border-radius: 4px; padding: 8px; margin-bottom: 10px; background-color: #222; }
-        .btn-add-user { background-color: #0073aa; border: none; color: #fff; padding: 6px 12px; border-radius: 4px; margin-top: 5px; cursor: pointer; transition: background-color 0.3s; }
-        .btn-add-user:hover { background-color: #005177; }
-        .pdf_upload_block { margin-bottom: 10px; display: flex; align-items: center; gap: 10px; }
-        .add-pdf-button { background-color: #28a745; color: #fff; border: none; padding: 8px 16px; border-radius: 4px; cursor: pointer; font-weight: bold; transition: background-color 0.3s; margin-top: 5px; }
-        .add-pdf-button:hover { background-color: #218838; }
-        .popup-product-row {
-            border-bottom: 1px solid #ccc;
-            padding: 5px 0;
+
+        .wc-refresh-button {
+            background-color: #4CAF50;
+            color: #fff;
+            border: none;
+            padding: 8px 12px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 0.9em;
+            font-weight: bold;
+            transition: background-color 0.3s ease;
+            margin-right: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .wc-refresh-button:hover {
+            background-color: #45a049;
+        }
+        .wc-refresh-button svg {
+            width: 1em;
+            height: 1em;
+        }
+
+        .wc-date-filter-button {
+            position: relative;
+            text-align: center;
+            min-width: 120px;
+            padding: 8px 12px;
+            font-size: 0.9em;
+            box-sizing: border-box;
+            width: 120px;
+        }
+        .wc-date-filter-button::-webkit-calendar-picker-indicator {
+            filter: invert(1);
+            cursor: pointer;
+            position: absolute;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            opacity: 0;
+        }
+        .wc-date-filter-button::-webkit-datetime-edit-month-field,
+        .wc-date-filter-button::-webkit-datetime-edit-day-field,
+        .wc-date-filter-button::-webkit-datetime-edit-year-field {
+            color: transparent;
+        }
+        .wc-date-filter-button::before {
+            content: "Selecteer Week";
+            color: #fff;
+            position: absolute;
+            pointer-events: none;
+            padding-top: 1px;
+            font-weight: bold;
+            left: 50%;
+            transform: translateX(-50%);
+            white-space: nowrap;
+        }
+        .wc-date-filter-button:valid::before {
+            content: "";
+        }
+
+        .wc-weekagenda-google {
+            display: flex;
+            flex-wrap: wrap;
+            overflow-x: visible;
+            gap: 0;
+            font-family: "Roboto", sans-serif;
+            color: #fff;
+            padding: 0;
+            background-color: transparent;
+            border-radius: 8px;
+            box-shadow: none;
+            max-width: 100%;
+            margin: 0;
+            border: none;
+            transition: none;
+        }
+
+        .wc-weekagenda-dag-google {
+            flex-shrink: 0;
+            flex-grow: 1;
+            width: calc(100% / 7);
+            background: transparent;
+            border-radius: 0;
+            padding: 16px;
+            min-height: 200px;
+            box-shadow: none;
+            transition: none;
+            border-top: none;
+            border-right: 1px solid rgba(255, 255, 255, 0.3);
+            border-bottom: none;
+            display: flex;
+            flex-direction: column;
+            padding-bottom: 24px;
+            box-sizing: border-box;
+        }
+        .wc-weekagenda-dag-google:nth-child(7n) {
+            border-right: none;
+        }
+
+        .wc-weekagenda-dag-google:hover {
+            transform: none;
+            box-shadow: none;
+            z-index: 1;
+        }
+        .wc-weekagenda-dag-google h4 {
+            margin-top: 0;
+            margin-bottom: 5px;
+            font-size: 1.3em;
+            font-weight: 500;
+            color: #fff;
+            display: block;
+            line-height: 1.2;
+        }
+        .wc-weekagenda-dag-google .wc-day-date {
+            font-size: 0.9em;
+            color: #ccc;
+            margin-bottom: 10px;
+            font-weight: 400;
+            display: block;
+        }
+
+        .wc-order-badge {
+            display: inline-block;
+            color: #fff;
+            padding: 3px 6px;
+            border-radius: 4px;
+            font-size: 0.9em;
+            font-weight: bold;
+            margin-bottom: 5px;
+        }
+
+        /* Maatwerk badge kleuren */
+        .wc-order-badge.status-maatwerk-green {
+            background-color: #4CAF50 !important;
+        }
+        .wc-order-badge.status-maatwerk-red {
+            background-color: #F44336 !important;
+        }
+        .wc-order-badge.status-maatwerk-orange {
+            background-color: #FF8C00 !important;
+        }
+
+        /* WooCommerce badge kleuren */
+        .wc-order-badge.status-wc-green {
+            background-color: #4CAF50 !important;
+        }
+        .wc-order-badge.status-wc-orange {
+            background-color: #FF8C00 !important;
+        }
+        .wc-order-badge.status-wc-red {
+            background-color: #F44336 !important;
+        }
+
+        .wc-weekagenda-item-google {
+            background: #3B3B4C;
+            margin-bottom: 8px;
+            border-radius: 8px;
+            padding: 10px;
+            font-size: 0.9em;
+            line-height: 1.4;
+            position: relative;
+            box-shadow: 0 1px 2px rgba(0,0,0,0.2);
+            padding-bottom: 8px;
+            border-bottom: none;
+            cursor: pointer;
+        }
+        .wc-weekagenda-item-google:last-child {
+            border-bottom: none;
+            margin-bottom: 0;
+            padding-bottom: 0;
+        }
+
+        /* Nieuwe border-left stijlen per type */
+        .wc-weekagenda-item-woocommerce {
+            border-left: 4px solid #0000FF;
+        }
+        .wc-weekagenda-item-maatwerk {
+            border-left: 4px solid #800080;
+        }
+
+        .wc-weekagenda-item-google b {
+            color: #fff;
+            font-weight: 500;
+        }
+        .wc-weekagenda-item-google .wc-time-display {
+            font-size: 0.9em;
+            font-weight: bold;
+            display: block;
+            margin-top: 5px;
+        }
+        .wc-weekagenda-item-google .wc-company-name-display {
+            font-size: 0.9em;
+            font-weight: normal;
+            display: block;
+            margin-bottom: 5px;
+            color: #fff;
+        }
+
+        .wc-weekagenda-item-google a {
+            color: #fff;
+            text-decoration: none;
+            font-weight: normal;
+            transition: color 0.2s ease-in-out;
+        }
+        .wc-weekagenda-item-google a:hover {
+            text-decoration: underline;
+            color: #f0f0f0;
+        }
+        .wc-weekagenda-leeg-google {
+            color: #fff;
+            font-style: italic;
+            padding: 15px;
+            text-align: center;
+            background: #3B3B4C;
+            border-radius: 8px;
+            margin-top: 15px;
+            flex-grow: 1;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .wc-info-text {
+            font-weight: normal;
+            color: #fff;
+            font-size: 0.9em;
+        }
+        .wc-info-text b {
+            font-weight: 500;
+        }
+
+        /* Alle dagspecifieke kleuren voor border-top zijn nu overschreven naar wit */
+        .maandag, .dinsdag, .woensdag, .donderdag, .vrijdag, .zaterdag, .zondag {
+            border-color: rgba(255, 255, 255, 0.3);
+        }
+
+        /* Modale Stijlen */
+        .wc-order-modal {
+            display: none;
+            position: fixed;
+            z-index: 9999;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            overflow: auto;
+            background-color: rgba(0,0,0,0.7);
+            padding-top: 60px;
+        }
+
+        .wc-order-modal-content {
+            background-color: #3B3B4C;
+            margin: 5% auto;
+            padding: 20px;
+            border: 1px solid #888;
+            width: 80%;
+            max-width: 600px;
+            border-radius: 10px;
+            position: relative;
+            box-shadow: 0 4px 8px 0 rgba(0,0,0,0.2), 0 6px 20px 0 rgba(0,0,0,0.19);
+            color: #fff;
+            font-family: "Roboto", sans-serif;
+        }
+
+        .wc-order-modal-close {
+            color: #aaa;
+            float: right;
+            font-size: 28px;
+            font-weight: bold;
+            position: absolute;
+            right: 20px;
+            top: 10px;
+        }
+
+        .wc-order-modal-close:hover,
+        .wc-order-modal-close:focus {
+            color: #fff;
+            text-decoration: none;
+            cursor: pointer;
+        }
+
+        .wc-modal-top-info {
+            color: #FF8C00;
+            font-size: 1.2em;
+            font-weight: bold;
+            margin-bottom: 15px;
+            text-align: left;
+        }
+        .wc-modal-top-info span {
+            display: block;
+            margin-bottom: 5px;
+        }
+        .wc-modal-top-info span:last-child {
+            margin-bottom: 0;
+        }
+
+        .wc-modal-detail-section {
+            margin-bottom: 15px;
+            padding-bottom: 0;
+            border-bottom: none;
+        }
+
+        .wc-modal-detail-section:last-child {
+            border-bottom: none;
+            margin-bottom: 0;
+            padding-bottom: 0;
+        }
+
+        .wc-modal-detail-section h4 {
+            color: #FF8C00;
+            margin-top: 0;
+            margin-bottom: 10px;
+            font-size: 1.1em;
+            padding-bottom: 5px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.2);
+        }
+
+        .wc-modal-detail-section p {
+            margin: 0;
+            font-size: 0.95em;
+            line-height: 1.4;
+            padding-top: 5px;
+        }
+        .wc-modal-detail-section p.no-title {
+            font-weight: normal;
+        }
+        .wc-modal-detail-section p.no-title strong {
+            font-weight: bold;
+        }
+        .wc-modal-detail-section p + p {
+            margin-top: 5px;
+        }
+
+        .wc-modal-detail-section.ordered-products ul {
+            list-style: none;
+            padding: 0;
+            margin: 0;
+            border-top: none;
+        }
+
+        .wc-modal-detail-section.ordered-products ul li {
+            background-color: transparent;
+            padding: 10px 0;
+            margin-bottom: 0;
+            border-radius: 0;
+            font-size: 0.9em;
+            display: flex;
+            flex-direction: column;
+            align-items: flex-start;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.2);
+        }
+
+        .wc-modal-detail-section.ordered-products ul li:last-child {
+            border-bottom: none;
+            margin-bottom: 0;
+            padding-bottom: 0;
+        }
+
+        .wc-modal-detail-section.ordered-products ul li .product-name-qty {
             display: flex;
             justify-content: space-between;
+            width: 100%;
+            margin-bottom: 5px;
         }
-        .logboek {
-            background-color: #444;
-            color: #ccc;
-            padding: 5px 10px;
-            font-size: 0.8em;
-            text-align: left;
-            border-radius: 4px;
-            margin-top: 10px;
+        .wc-modal-detail-section.ordered-products ul li ul {
+            padding-left: 15px;
+            margin-top: 5px;
+            width: 100%;
+            border-top: none;
         }
-    </style>
-    
-    <div id="loading-overlay">
-        <div class="spinner"><i class="fa fa-spinner fa-spin"></i></div>
-    </div>
-    
-    <div id="popup-overlay" class="popup-overlay">
-        <div id="popup-content" class="popup-content"></div>
-    </div>
-    
-    <script>
-    function openNewUserPopup(){
-        var popup = document.getElementById('new-user-popup');
-        if(popup){ popup.style.display = 'flex'; }
-    }
-    function closeNewUserPopup(){
-        var popup = document.getElementById('new-user-popup');
-        if(popup){ popup.style.display = 'none'; }
-    }
-    function addPdfUploadBlock(containerId) {
-        var container = document.getElementById(containerId);
-        var block = document.createElement('div');
-        block.className = 'pdf_upload_block';
-        block.innerHTML = '<input type="file" name="custom_pdf_documents[]" accept="application/pdf"> <select name="custom_pdf_visibility[]"><option value="public">Openbaar</option><option value="private">Privé</option></select>';
-        container.appendChild(block);
-    }
-    document.addEventListener('DOMContentLoaded', function(){
-        var filterForm = document.getElementById('order-filter-form');
-        if(filterForm){
-            filterForm.addEventListener('submit', function(){
-                document.getElementById('loading-overlay').style.display = 'block';
-            });
+        .wc-modal-detail-section.ordered-products ul li ul li {
+            background-color: transparent;
+            padding: 0;
+            border-bottom: none;
+            margin-bottom: 2px;
+            font-size: 0.85em;
         }
-        var navLinks = document.querySelectorAll('.navigation-buttons a, .cancelled-toggle-button, .reset-filters-button');
-        navLinks.forEach(function(link){
-            link.addEventListener('click', function(){
-                document.getElementById('loading-overlay').style.display = 'block';
-            });
+
+.wc-daily-summary-button {
+    background-color: #3B3B4C !important;   /* Heldere blauw */
+    color: #fff !important;
+    border: none;
+    padding: 8px 12px;
+    border-radius: 5px;
+    cursor: pointer;
+    font-size: 0.8em;
+    font-weight: bold;
+    transition: background-color 0.3s ease;
+    width: 100%;
+    margin-top: auto;
+    display: block;
+    text-align: center;
+}
+
+.wc-daily-summary-button:hover {
+    background-color: #3B3B4C !important;   /* Iets donkerder blauw bij hover */
+}
+
+
+
+        /* Note indicator for order items */
+        .wc-weekagenda-item-google[data-has-note="true"] {
+            position: relative; /* Nodig voor positionering van pseudo-element */
+        }
+        .wc-weekagenda-item-google[data-has-note="true"]::after {
+            content: "!"; /* Uitroepteken */
+            display: block;
+            width: 20px;
+            height: 20px;
+            background-color: #FF8C00; /* Oranje */
+            color: #fff;
+            border-radius: 50%; /* Ronde vorm */
+            text-align: center;
+            line-height: 20px; /* Centreer tekst verticaal */
+            font-weight: bold;
+            font-size: 1.1em;
+            position: absolute;
+            top: 5px; /* Pas aan indien nodig */
+            right: 5px; /* Pas aan indien nodig */
+            box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+            z-index: 10; /* Zorg ervoor dat het boven andere elementen ligt */
+        }
+
+
+        @media (max-width: 600px) {
+            .wc-order-modal-content {
+                width: 95%;
+                margin: 20px auto;
+            }
+        }
+    </style>';
+
+$output .= '<div class="wc-agenda-navigation">';
+// Groepeer Maatwerk, Klant toevoegen en Turflijst knoppen aan de linkerkant
+$output .= '<div class="wc-nav-elements-left">';
+// Toon "+ Maatwerk" en "Klant toevoegen" knoppen alleen aan beheerders
+    $output .= '<button id="wc-filter-wc" class="wc-nav-button">Toon alleen banqueting</button>';
+	$output .= '<button id="wc-hide-cancelled" class="wc-nav-button">Verberg geannuleerd</button>';
+
+if (in_array('administrator', $user_roles)) { 
+    $output .= '<button class="wc-nav-button wc-new-maatwerk-button icon-only">'; // 'icon-only' klasse toegevoegd
+    $output .= '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512" style="width: 14px; height: 14px; vertical-align: middle;"><path fill="currentColor" d="M96 32l0 32L48 64C21.5 64 0 85.5 0 112l0 48 448 0 0-48c0-26.5-21.5-48-48-48l-48 0 0-32c0-17.7-14.3-32-32-32s-32 14.3-32 32l0 32L160 64l0-32c0-17.7-14.3-32-32-32S96 14.3 96 32zM448 192L0 192 0 464c0 26.5 21.5 48 48 48l352 0c26.5 0 48-21.5 48-48l0-272zM224 248c13.3 0 24 10.7 24 24l0 56 56 0c13.3 0 24 10.7 24 24s-10.7 24-24 24l-56 0 0 56c0 13.3-10.7 24-24 24s-24-10.7-24-24l0-56-56 0c-13.3 0-24-10.7-24-24s10.7-24 24-24l56 0 0-56c0-13.3 10.7-24 24-24z"/></svg>';
+    $output .= '</button>'; // Tekst "Maatwerk" is verwijderd
+
+    $output .= '<button class="wc-nav-button wc-add-customer-button icon-only">'; // 'icon-only' klasse toegevoegd
+    $output .= '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 512" style="width: 14px; height: 14px; vertical-align: middle;"><path fill="currentColor" d="M96 128a128 128 0 1 1 256 0A128 128 0 1 1 96 128zM0 482.3C0 383.8 79.8 304 178.3 304l91.4 0C368.2 304 448 383.8 448 482.3c0 16.4-13.3 29.7-29.7 29.7L29.7 512C13.3 512 0 498.7 0 482.3zM504 312l0-64-64 0c-13.3 0-24-10.7-24-24s10.7-24 24-24l64 0 0-64c0-13.3 10.7-24 24-24s24 10.7 24 24l0 64 64 0c13.3 0 24 10.7 24 24s-10.7 24-24 24l-64 0 0 64c0 13.3-10.7 24-24 24s-24-10.7-24-24z"/></svg>';
+    $output .= '</button>'; // Tekst "Klant toevoegen" is verwijderd
+}
+
+$output .= '<button class="wc-nav-button wc-turflijst-button icon-only">'; // Added 'icon-only' class
+$output .= '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" style="width: 14px; height: 14px; vertical-align: middle;"><path fill="currentColor" d="M152.1 38.2c9.9 8.9 10.7 24 1.8 33.9l-72 80c-4.4 4.9-10.6 7.8-17.2 7.9s-12.9-2.4-17.6-7L7 113C-2.3 103.6-2.3 88.4 7 79s24.6-9.4 33.9 0l22.1 22.1 55.1-61.2c8.9-9.9 24-10.7 33.9-1.8zm0 160c9.9 8.9 10.7 24 1.8 33.9l-72 80c-4.4 4.9-10.6 7.8-17.2 7.9s-12.9-2.4-17.6-7L7 273c-9.4-9.4-9.4-24.6 0-33.9s24.6-9.4 33.9 0l22.1 22.1 55.1-61.2c8.9-9.9 24-10.7 33.9-1.8zM224 96c0-17.7 14.3-32 32-32l224 0c17.7 0 32 14.3 32 32s-14.3 32-32 32l-224 0c-17.7 0-32-14.3-32-32zm0 160c0-17.7 14.3-32 32-32l224 0c17.7 0 32 14.3 32 32s-14.3 32-32 32l-224 0c-17.7 0-32-14.3-32-32zM160 416c0-17.7 14.3-32 32-32l288 0c17.7 0 32 14.3 32 32s-14.3 32-32 32l-288 0c-17.7 0-32-14.3-32-32zM48 368a48 48 0 1 1 0 96 48 48 0 1 1 0-96z"/></svg>';
+$output .= '</button>'; 
+	
+    $output .= '</div>'; // Sluit wc-nav-elements-left
+
+    $output .= '<span class="wc-current-week-display">' . date_i18n('j F Y', $week_start) . ' - ' . date_i18n('j F Y', $week_end) . '</span>';
+    // Groepeer navigatieknoppen en datumfilter aan de rechterkant
+    $output .= '<div class="wc-nav-elements-right">';
+
+// Home knop:
+$output .= '<button class="wc-nav-button wc-help-button" title="Home" type="button" onclick="window.location.href=\'https://banquetingportaal.nl/alg/orders/\';">
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--!Font Awesome Free 6.7.2 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free Copyright 2025 Fonticons, Inc.--><path d="M575.8 255.5c0 18-15 32.1-32 32.1l-32 0 .7 160.2c0 2.7-.2 5.4-.5 8.1l0 16.2c0 22.1-17.9 40-40 40l-16 0c-1.1 0-2.2 0-3.3-.1c-1.4 .1-2.8 .1-4.2 .1L416 512l-24 0c-22.1 0-40-17.9-40-40l0-24 0-64c0-17.7-14.3-32-32-32l-64 0c-17.7 0-32 14.3-32 32l0 64 0 24c0 22.1-17.9 40-40 40l-24 0-31.9 0c-1.5 0-3-.1-4.5-.2c-1.2 .1-2.4 .2-3.6 .2l-16 0c-22.1 0-40-17.9-40-40l0-112c0-.9 0-1.9 .1-2.8l0-69.7-32 0c-18 0-32-14-32-32.1c0-9 3-17 10-24L266.4 8c7-7 15-8 22-8s15 2 21 7L564.8 231.5c8 7 12 15 11 24z"/></svg>
+</button>';
+
+    // Nieuwe "Vandaag" knop
+    $output .= '<button class="wc-nav-button wc-today-button" data-week-start="' . date('Y/m/d', strtotime('monday this week')) . '">Deze week</button>';
+    // Pijlknoppen
+    $output .= '<button class="wc-nav-button wc-arrow-button" data-week-start="' . date('Y/m/d', $prev_week_timestamp) . '">&lt;</button>';
+    $output .= '<button class="wc-nav-button wc-arrow-button" data-week-start="' . date('Y/m/d', $next_week_timestamp) . '">&gt;</button>';
+    // Datumkiezer achter de pijltjes
+    $output .= '<input type="date" id="wc-date-filter" class="wc-nav-button wc-date-filter-button" value="' . date('Y-m-d', $current_week_start_timestamp) . '">';
+    $output .= '</div>'; // Sluit wc-nav-elements-right
+
+    $output .= '</div>'; // Sluit wc-agenda-navigation
+
+    // De agenda-container die via AJAX wordt bijgewerkt
+    $output .= '<div class="wc-weekagenda-google" id="wc-weekagenda-container">';
+    // Geef de initiële has_note status door aan generate_agenda_content
+    $output .= generate_agenda_content($agenda, $week_start, $day_filter);
+    $output .= '</div>'; // Sluit wc-weekagenda-google
+    $output .= '</div>'; // Sluit wc-weekagenda-wrapper
+
+    // Modale pop-up structuur
+    $output .= '
+    <div id="wc-order-modal" class="wc-order-modal">
+        <div class="wc-order-modal-content">
+            <span class="wc-order-modal-close">&times;</span>
+            <div id="wc-order-modal-body">
+                <div style="text-align: center; padding: 20px;">Laden bestelgegevens...</div>
+            </div>
+        </div>
+    </div>';
+
+    // JavaScript voor AJAX navigatie en modal
+    $output .= '
+<script type="text/javascript">
+document.addEventListener("DOMContentLoaded", function() {
+    initAgendaNavigation();
+    initModalFunctionality();
+    initNewMaatwerkButton();
+    initAddCustomerButton();
+    initTurflijstButton();
+    initRefreshButton();
+    initFilters();
+    initDailySummaryButtons();
+
+    // **TOEGEVOEGD**: filter WooCommerce-only
+    const filterWcBtn = document.getElementById("wc-filter-wc");
+    filterWcBtn.dataset.active = "0";
+    filterWcBtn.addEventListener("click", function() {
+        const items = document.querySelectorAll(".wc-weekagenda-item-google");
+        const showAll = this.dataset.active === "1";
+        items.forEach(item => {
+            if (item.dataset.orderType === "maatwerk") {
+                item.style.display = showAll ? "" : "none";
+            }
         });
+        this.textContent   = showAll ? "Toon alleen banqueting" : "Toon alle orders";
+        this.dataset.active = showAll ? "0" : "1";
     });
-    function openPopup(orderId) {
-        var detailsElem = document.getElementById('details-' + orderId);
-        if (detailsElem) {
-            document.getElementById('popup-content').innerHTML = '<span class="close-popup" onclick="closePopup()">&times;</span>' + detailsElem.innerHTML;
-            document.getElementById('popup-overlay').style.display = 'flex';
-        } else {
-            console.error("Details voor order " + orderId + " niet gevonden.");
-        }
-    }
-    function openPopupEvent(eventId) {
-        var detailsElem = document.getElementById('event-details-' + eventId);
-        if (detailsElem) {
-            document.getElementById('popup-content').innerHTML = '<span class="close-popup" onclick="closePopup()">&times;</span>' + detailsElem.innerHTML;
-            document.getElementById('popup-overlay').style.display = 'flex';
-        } else {
-            console.error("Details voor event " + eventId + " niet gevonden.");
-        }
-    }
-    function closePopup() {
-        document.getElementById('popup-overlay').style.display = 'none';
-    }
-    function openEventPopup() {
-        document.getElementById('event-popup-overlay').style.display = 'flex';
-    }
-    function closeEventPopup() {
-        document.getElementById('event-popup-overlay').style.display = 'none';
-    }
-    function openEventDetails(eventId) {
-        document.getElementById('event-details-popup-overlay').style.display = 'flex';
-        var detailsContent = document.getElementById('event-details-' + eventId).innerHTML;
-        document.getElementById('event-details-popup-content').innerHTML =
-            '<span class="close-popup" onclick="closeEventDetails()">&times;</span>' + detailsContent;
-    }
-    function closeEventDetails() {
-        document.getElementById('event-details-popup-overlay').style.display = 'none';
-    }
-    function openEditEvent(eventId) {
-        var editElement = document.getElementById('event-edit-' + eventId);
-        if (editElement) {
-            document.getElementById('edit-event-popup-overlay').style.display = 'flex';
-            var editContent = editElement.innerHTML;
-            document.getElementById('edit-event-popup-content').innerHTML =
-                '<span class="close-popup" onclick="closeEditEvent()">&times;</span>' + editContent;
-        } else {
-            console.error("Edit element voor event " + eventId + " niet gevonden.");
-        }
-    }
-    function closeEditEvent() {
-        document.getElementById('edit-event-popup-overlay').style.display = 'none';
-    }
-    function toggleOptionDate(val, containerId) {
-        var container = document.getElementById(containerId);
-        container.style.display = (val === "in optie") ? 'block' : 'none';
-    }
-    </script>
-    
-    <?php
-    if ( empty( $filter_order ) ) {
-        echo "<div class='week-header' style='text-align:center; font-size:18px; font-weight:bold; margin-bottom:20px;'>";
-        echo "Periode: " . esc_html($start_date) . " t/m " . esc_html($end_date);
-        echo "</div>";
-    } else {
-        echo "<div class='week-header' style='text-align:center; font-size:18px; font-weight:bold; margin-bottom:20px;'>Zoekresultaten</div>";
-    }
-    echo "<div class='filter-bar'>";
-    ?>
-    <form method="get" id="order-filter-form" style="display: flex; flex-direction: column; gap: 10px;">
-        <input type="hidden" name="weeks_ahead" value="<?php echo esc_attr( $weeks_ahead ); ?>" />
-        <!-- Min attributen verwijderd zodat filtering op verleden datums mogelijk is -->
-        <input type="hidden" name="custom_from" value="<?php echo isset($_GET['custom_from']) ? esc_attr($_GET['custom_from']) : ''; ?>" />
-        <input type="hidden" name="custom_to" value="<?php echo isset($_GET['custom_to']) ? esc_attr($_GET['custom_to']) : ''; ?>" />
-        <?php if ( ! $show_cancelled ) : ?>
-            <input type="hidden" name="hide_cancelled" value="1" />
-        <?php endif; ?>
-        <div class="filter-row">
-            <input type="text" id="order-search" name="order_search" value="<?php echo esc_attr( $filter_order ); ?>" placeholder="Zoek op order-, eventnummer, referentie of bedrijfsnaam" style="flex: 1; width: 100%;" />
-        </div>
-        <div class="filter-row">
-            <div>
-                <label>Dag:</label>
-                <select id="day-select" name="day">
-                    <option value="">Alle dagen</option>
-                    <?php
-                    foreach ( $day_map as $num => $day_name ) {
-                        $selected = ( $filter_day === $day_name ) ? "selected='selected'" : "";
-                        echo "<option value='" . esc_attr( $day_name ) . "' $selected>" . esc_html( ucfirst( $day_name ) ) . "</option>";
-                    }
-                    ?>
-                </select>
-            </div>
-            <div>
-                <label>Periode (van/tot):</label>
-                <!-- Min attributen verwijderd zodat filtering op verleden datums mogelijk is -->
-                <input type="date" name="custom_from" value="<?php echo isset($_GET['custom_from']) ? esc_attr($_GET['custom_from']) : ''; ?>">
-                <input type="date" name="custom_to" value="<?php echo isset($_GET['custom_to']) ? esc_attr($_GET['custom_to']) : ''; ?>">
-            </div>
-            <div>
-                <label>Filter:</label>
-                <select id="combined_filter" name="combined_filter">
-                    <option value="">Alle events</option>
-                    <option value="eigen" <?php selected($combined_filter, 'eigen'); ?>>Maatwerk</option>
-                </select>
-            </div>
-            <div>
-                <?php
-                $toggle_url = add_query_arg( 'hide_cancelled', $show_cancelled ? '1' : false );
-                $toggle_text = $show_cancelled ? 'Geannuleerde orders verbergen' : 'Geannuleerde orders tonen';
-                echo "<a href='" . esc_url($toggle_url) . "' class='cancelled-toggle-button'><i class='fa fa-ban'></i> $toggle_text</a>";
-                ?>
-            </div>
-        </div>
-        <!-- Nieuwe layout: knoppen naast elkaar -->
-        <div class="filter-buttons">
-            <?php
-                if ( is_admin() ) {
-                    $reset_url = admin_url('admin.php?page=week-overzicht');
-                } else {
-                    $reset_url = remove_query_arg( array('weeks_ahead', 'day', 'order_search', 'custom_from', 'custom_to', 'combined_filter', 'hide_cancelled') );
-                }
-                echo "<a href='" . esc_url($reset_url) . "' class='reset-filters-button'><i class='fa fa-refresh'></i> Reset Filters</a>";
-            ?>
-            <button type="submit" class="details-button" style="background-color: #009640;"><i class="fa fa-search"></i> Start met filteren</button>
-        </div>
-    </form>
-    <?php
-    echo "</div>";
-    
-    // Alleen voor admin: Knoppen voor Partijen invoeren en Klant toevoegen
-    echo '<div class="filter-bar" style="text-align: left; margin-bottom: 20px;">';
-    if ( current_user_can('manage_options') ) {
-        echo '<button onclick="openEventPopup()" class="details-button" style="background-color: #009640; color: #fff;"><i class="fa fa-plus"></i> Partij invoeren</button>';
-        echo '<button onclick="openNewUserPopup()" class="details-button" style="background-color: #009640; color: #fff; margin-left:10px;"><i class="fa fa-user-plus"></i> Klant toevoegen</button>';
-    }
-    echo '<span style="display:inline-block; margin-left:10px;">' . do_shortcode('[custom_form_popup]') . '</span>';
-    echo ' <span style="font-size:0.9em; color:#ccc; margin-left:10px;">Eigen partijen (maatwerk) invoeren in de agenda</span>';
-    echo '</div>';
 
-    ?>
-    <div id="event-popup-overlay" class="popup-overlay">
-        <div class="popup-content" id="event-popup-content">
-             <span class="close-popup" onclick="closeEventPopup()">&times;</span>
-             <h3>Partij invoeren</h3>
-             <form method="post" id="custom-event-form" enctype="multipart/form-data">
-                 <div class="form-section-title">Event Gegevens</div>
-                 <div class="event-form-group full">
-                     <div>
-                         <label>Numer:</label>
-                         <input type="text" name="custom_event_number" placeholder="Bijv. NA 12-1">
-                     </div>
-                 </div>
-                 <div class="event-form-group">
-                     <div>
-                         <label>Status:</label>
-                         <select name="custom_status" id="custom_status" title="Selecteer status (bijv. akkoord, in optie of geannuleerd)" onchange="toggleOptionDate(this.value, 'option_date_container_add')">
-                             <option value="akkoord">Akkoord</option>
-                             <option value="in optie">In optie</option>
-                             <option value="geannuleerd">Geannuleerd</option>
-                         </select>
-                     </div>
-                     <div id="option_date_container_add" style="display:none;">
-                         <label>Optie Datum:</label>
-                         <!-- min attribuut verwijderd -->
-                         <input type="date" name="custom_option_date">
-                     </div>
-                 </div>
-                 <div class="splitter"></div>
-                 <?php $users = get_users(array('fields'=>array('ID','display_name'))); ?>
-                 <div class="user-selector-container">
-                     <label>Klant zoeken:</label>
-                     <input type="text" id="user_input" list="user_datalist" placeholder="Zoek en selecteer gebruiker..." style="width:100%; padding:5px;">
-                     <datalist id="user_datalist">
-                         <option value="">-- Kies Gebruiker --</option>
-                         <?php 
-                         foreach ($users as $user) {
-                             $company    = get_user_meta($user->ID, 'billing_company', true);
-                             $first_name = get_user_meta($user->ID, 'first_name', true);
-                             $last_name  = get_user_meta($user->ID, 'last_name', true);
-                             $option_text = $company . " - " . $first_name . " " . $last_name;
-                             echo "<option value='" . esc_attr($option_text) . "' data-userid='" . esc_attr($user->ID) . "' data-first='" . esc_attr($first_name) . "' data-last='" . esc_attr($last_name) . "' data-company='" . esc_attr($company) . "' data-address='" . esc_attr(get_user_meta($user->ID, 'billing_address_1', true)) . "' data-postcode='" . esc_attr(get_user_meta($user->ID, 'billing_postcode', true)) . "' data-city='" . esc_attr(get_user_meta($user->ID, 'billing_city', true)) . "' data-email='" . esc_attr(get_user_meta($user->ID, 'billing_email', true)) . "' data-phone='" . esc_attr(get_user_meta($user->ID, 'billing_phone', true)) . "' >";
-                         }
-                         echo "<option value='Hageman Catering - Bas Hageman' data-userid='example' data-first='Bas' data-last='Hageman' data-company='Hageman Catering' data-address='Voorbeeldstraat 1' data-postcode='1234 AB' data-city='Voorbeeldstad' data-email='bas@example.com' data-phone='0612345678'></option>";
-                         ?>
-                     </datalist>
-                 </div>
-                 <script>
-                 document.getElementById('user_input').addEventListener('change', function(){
-                     var inputValue = this.value;
-                     var datalist = document.getElementById('user_datalist');
-                     var options = datalist.options;
-                     var selectedData = null;
-                     for (var i = 0; i < options.length; i++) {
-                         if (options[i].value === inputValue) {
-                             selectedData = options[i];
-                             break;
-                         }
-                     }
-                     if (selectedData) {
-                         document.querySelector('input[name="custom_first_name"]').value = selectedData.getAttribute('data-first') || "";
-                         document.querySelector('input[name="custom_last_name"]').value = selectedData.getAttribute('data-last') || "";
-                         document.querySelector('input[name="custom_company"]').value = selectedData.getAttribute('data-company') || "";
-                         document.querySelector('input[name="custom_address"]').value = selectedData.getAttribute('data-address') || "";
-                         document.querySelector('input[name="custom_postcode"]').value = selectedData.getAttribute('data-postcode') || "";
-                         document.querySelector('input[name="custom_city"]').value = selectedData.getAttribute('data-city') || "";
-                         document.querySelector('input[name="custom_email"]').value = selectedData.getAttribute('data-email') || "";
-                         document.querySelector('input[name="custom_phone"]').value = selectedData.getAttribute('data-phone') || "";
-                     }
-                 });
-                 </script>
-                 <div class="event-form-group">
-                     <div>
-                         <label>Voornaam:</label>
-                         <input type="text" name="custom_first_name" placeholder="Voornaam">
-                     </div>
-                     <div>
-                         <label>Achternaam:</label>
-                         <input type="text" name="custom_last_name" placeholder="Achternaam">
-                     </div>
-                 </div>
-                 <div class="event-form-group">
-                     <div>
-                         <label>Email:</label>
-                         <input type="email" name="custom_email" placeholder="Email">
-                     </div>
-                     <div>
-                         <label>Telefoonnummer:</label>
-                         <input type="text" name="custom_phone" placeholder="Telefoonnummer">
-                     </div>
-                 </div>
-                 <div class="splitter"></div>
-                 <div class="form-section-title">NAW Gegevens</div>
-                 <div class="event-form-group full">
-                     <div>
-                         <label>Bedrijfsnaam:</label>
-                         <input type="text" name="custom_company" placeholder="Bedrijfsnaam">
-                     </div>
-                 </div>
-                 <div class="event-form-group full">
-                     <div>
-                         <label>Straat + Huisnummer:</label>
-                         <input type="text" name="custom_address" placeholder="Straat + Huisnummer">
-                     </div>
-                 </div>
-                 <div class="event-form-group">
-                     <div>
-                         <label>Postcode:</label>
-                         <input type="text" name="custom_postcode" placeholder="Postcode">
-                     </div>
-                     <div>
-                         <label>Plaats:</label>
-                         <input type="text" name="custom_city" placeholder="Plaats">
-                     </div>
-                 </div>
-                 <div class="splitter"></div>
-                 <div class="form-section-title">Event Gegevens</div>
-                 <div class="event-form-group full">
-                     <div>
-                         <label>Referentie:</label>
-                         <input type="text" name="custom_reference" placeholder="Referentie">
-                     </div>
-                 </div>
-                 <div class="event-form-group full">
-                     <div>
-                         <label>Datum:</label>
-                         <!-- min attribuut verwijderd zodat verleden datums toegestaan zijn -->
-                         <input type="date" name="custom_date" required>
-                     </div>
-                 </div>
-                 <div class="event-form-group">
-                     <div>
-                         <label>Start tijd:</label>
-                         <input type="time" name="custom_start_time">
-                     </div>
-                     <div>
-                         <label>Eind tijd:</label>
-                         <input type="time" name="custom_end_time">
-                     </div>
-                 </div>
-                 <div class="event-form-group" style="gap: 10px;">
-                     <div style="flex: 1;">
-                         <label>Aantal medewerkers:</label>
-                         <select name="custom_staff">
-                             <option value="">geen personeel</option>
-                             <?php for ($i = 1; $i <= 15; $i++): ?>
-                                 <option value="<?php echo $i; ?>"><?php echo $i; ?></option>
-                             <?php endfor; ?>
-                         </select>
-                     </div>
-                     <div style="flex: 1;">
-                         <label>Aantal Personen:</label>
-                         <input type="number" name="custom_personen" placeholder="Bijv. 50">
-                     </div>
-                 </div>
-                 <div class="splitter"></div>
-                 <!-- PDF Upload Sectie -->
-                 <div class="form-section-title">PDF Documenten</div>
-                 <div id="pdf-upload-container">
-                     <div class="pdf_upload_block">
-                         <input type="file" name="custom_pdf_documents[]" accept="application/pdf">
-                         <select name="custom_pdf_visibility[]">
-                             <option value="public">Openbaar</option>
-                             <option value="private">Privé</option>
-                         </select>
-                     </div>
-                 </div>
-                 <button type="button" class="add-pdf-button" onclick="addPdfUploadBlock('pdf-upload-container')">Voeg PDF toe</button><br>
-                 <br>
-                 <button type="submit" name="custom_event_submit" class="details-button" style="background-color: #009640;"><i class="fa fa-save"></i> Opslaan</button>
-             </form>
-        </div>
-    </div>
-    <?php if ( current_user_can('manage_options') ) : ?>
-    <div id="new-user-popup" class="popup-overlay">
-        <div class="popup-content">
-            <span class="close-popup" onclick="closeNewUserPopup()">&times;</span>
-            <h3>Nieuwe gebruiker toevoegen</h3>
-            <form method="post" id="new-user-form">
-                <div class="form-section-title">Gegevens</div>
-                <div class="event-form-group full">
-                    <div>
-                        <label>Voornaam:</label>
-                        <input type="text" name="new_first_name" value="<?php echo esc_attr( $new_user_data['first_name'] ); ?>">
-                    </div>
-                </div>
-                <div class="event-form-group full">
-                    <div>
-                        <label>Achternaam:</label>
-                        <input type="text" name="new_last_name" value="<?php echo esc_attr( $new_user_data['last_name'] ); ?>">
-                    </div>
-                </div>
-                <div class="event-form-group full">
-                    <div>
-                        <label>Bedrijfsnaam (optioneel):</label>
-                        <input type="text" name="new_company" value="<?php echo esc_attr( $new_user_data['company'] ); ?>">
-                    </div>
-                </div>
-                <div class="event-form-group full">
-                    <div>
-                        <label>Straat (optioneel):</label>
-                        <input type="text" name="new_street" value="<?php echo esc_attr( $new_user_data['street'] ); ?>">
-                    </div>
-                </div>
-                <div class="event-form-group">
-                    <div>
-                        <label>Postcode (optioneel):</label>
-                        <input type="text" name="new_postcode" value="<?php echo esc_attr( $new_user_data['postcode'] ); ?>">
-                    </div>
-                    <div>
-                        <label>Plaats (optioneel):</label>
-                        <input type="text" name="new_city" value="<?php echo esc_attr( $new_user_data['city'] ); ?>">
-                    </div>
-                </div>
-                <div class="event-form-group full">
-                    <div>
-                        <label>Email (optioneel):</label>
-                        <input type="email" name="new_email" value="<?php echo esc_attr( $new_user_data['email'] ); ?>">
-                    </div>
-                </div>
-                <div class="event-form-group full">
-                    <div>
-                        <label>Telefoonnummer (optioneel):</label>
-                        <input type="text" name="new_phone" value="<?php echo esc_attr( $new_user_data['phone'] ); ?>">
-                    </div>
-                </div>
-                <br>
-                <button type="submit" name="new_user_submit" class="details-button" style="background-color: #009640;"><i class="fa fa-user-plus"></i> Maak klant aan</button>
-            </form>
-        </div>
-    </div>
-    <?php endif; ?>
-    <div id="event-details-popup-overlay" class="popup-overlay">
-        <div class="popup-content" id="event-details-popup-content"></div>
-    </div>
-    <div id="edit-event-popup-overlay" class="popup-overlay">
-        <div class="popup-content" id="edit-event-popup-content"></div>
-    </div>
-    <script>
-    if ( document.getElementById('user_input_edit_<?php echo isset($event['event_id']) ? esc_attr($event['event_id']) : ''; ?>') ) {
-        document.getElementById('user_input_edit_<?php echo isset($event['event_id']) ? esc_attr($event['event_id']) : ''; ?>').addEventListener('change', function(){
-            var inputValue = this.value;
-            var datalist = document.getElementById('user_datalist_edit_<?php echo isset($event['event_id']) ? esc_attr($event['event_id']) : ''; ?>');
-            var options = datalist.options;
-            var selectedData = null;
-            for (var i = 0; i < options.length; i++) {
-                if (options[i].value === inputValue) {
-                    selectedData = options[i];
-                    break;
-                }
+    // **TOEGEVOEGD**: filter geannuleerde WooCommerce‑orders
+    const hideCancelledBtn = document.getElementById("wc-hide-cancelled");
+    hideCancelledBtn.dataset.active = "0";
+    hideCancelledBtn.addEventListener("click", function() {
+        const items = document.querySelectorAll(".wc-weekagenda-item-google");
+        const showAll = this.dataset.active === "1";
+        items.forEach(item => {
+            if (item.dataset.orderType === "woocommerce" && item.dataset.postStatus === "wc-cancelled") {
+                item.style.display = showAll ? "" : "none";
             }
-            if (selectedData) {
-                document.querySelector('input[name="custom_first_name"]').value = selectedData.getAttribute('data-first') || "";
-                document.querySelector('input[name="custom_last_name"]').value = selectedData.getAttribute('data-last') || "";
-                document.querySelector('input[name="custom_company"]').value = selectedData.getAttribute('data-company') || "";
-                document.querySelector('input[name="custom_address"]').value = selectedData.getAttribute('data-address') || "";
-                document.querySelector('input[name="custom_postcode"]').value = selectedData.getAttribute('data-postcode') || "";
-                document.querySelector('input[name="custom_city"]').value = selectedData.getAttribute('data-city') || "";
-                document.querySelector('input[name="custom_email"]').value = selectedData.getAttribute('data-email') || "";
-                document.querySelector('input[name="custom_phone"]').value = selectedData.getAttribute('data-phone') || "";
+        });
+        this.textContent   = showAll ? "Verberg geannuleerd" : "Toon geannuleerd";
+        this.dataset.active = showAll ? "0" : "1";
+    });
+});
+
+function initAgendaNavigation() {
+    const agendaContainer = document.getElementById("wc-weekagenda-container");
+    const navButtons = document.querySelectorAll(".wc-nav-elements-right .wc-nav-button:not(.wc-date-filter-button)");
+    const currentWeekDisplay = document.querySelector(".wc-current-week-display");
+    const agendaVisibility = document.querySelector(".wc-weekagenda-wrapper").dataset.agendaVisibility;
+
+    navButtons.forEach(button => {
+        button.removeEventListener("click", handleNavButtonClick);
+        button.addEventListener("click", handleNavButtonClick);
+    });
+
+    function handleNavButtonClick() {
+        const newWeekStart = this.dataset.weekStart;
+        fetchAgenda(newWeekStart, agendaVisibility);
+    }
+
+    function fetchAgenda(startDate, agendaVisibility) {
+        if (agendaContainer) {
+            agendaContainer.innerHTML = \'<div style="text-align:center;padding:50px;color:#fff;">Laden...</div>\';
+        }
+
+        const formData = new FormData();
+        formData.append("action", "wc_orders_week_agenda_ajax");
+        formData.append("start_date", startDate);
+        formData.append("agenda_visibility_setting", agendaVisibility);
+
+        fetch("' . admin_url('admin-ajax.php') . '", {
+            method: "POST",
+            body: formData
+        })
+        .then(response => response.text())
+        .then(html => {
+            if (agendaContainer) {
+                agendaContainer.innerHTML = html;
+
+                const start = new Date(startDate);
+                const end = new Date(start);
+                end.setDate(end.getDate() + 6);
+                const opts = { day: "numeric", month: "long", year: "numeric" };
+                currentWeekDisplay.textContent =
+                    start.toLocaleDateString("nl-NL", opts) + " - " +
+                    end.toLocaleDateString("nl-NL", opts);
+
+                initModalFunctionality();
+                initNewMaatwerkButton();
+                initAddCustomerButton();
+                initTurflijstButton();
+                initRefreshButton();
+                initFilters();
+                initDailySummaryButtons();
+            }
+        })
+        .catch(() => {
+            if (agendaContainer) {
+                agendaContainer.innerHTML = \'<div style="text-align:center;padding:50px;color:#fff;">Fout bij het laden van de agenda.</div>\';
             }
         });
     }
-    </script>
-    <!-- Edit Event Popup -->
-    <?php if ( current_user_can('manage_options') ) : ?>
-    <div id="event-edit-<?php echo esc_attr($event['event_id']); ?>" style="display:none;">
-        <h3>Event <?php echo esc_html($display_number); ?> Bewerken</h3>
-        <form method="post" id="edit-event-form" enctype="multipart/form-data">
-            <input type="hidden" name="custom_event_id" value="<?php echo esc_attr($event['event_id']); ?>">
-            <div class="form-section-title">Event Gegevens</div>
-            <div class="event-form-group full">
-                <div>
-                    <label>Event Nummer (Order Nummer):</label>
-                    <input type="text" name="custom_event_number" value="<?php echo esc_attr($event['event_number']); ?>" placeholder="Bijv. 12345">
-                </div>
-            </div>
-            <div class="event-form-group">
-                <div>
-                    <label>Status:</label>
-                    <select name="custom_status" id="edit_custom_status_<?php echo esc_attr($event['event_id']); ?>" title="Selecteer status (bijv. akkoord, in optie of geannuleerd)" onchange="toggleOptionDate(this.value, 'option_date_container_edit_<?php echo esc_attr($event['event_id']); ?>')">
-                        <option value="akkoord" <?php selected(strtolower($event['status']), 'akkoord'); ?>>Akkoord</option>
-                        <option value="in optie" <?php selected(strtolower($event['status']), 'in optie'); ?>>In optie</option>
-                        <option value="geannuleerd" <?php selected(strtolower($event['status']), 'geannuleerd'); ?>>Geannuleerd</option>
-                    </select>
-                </div>
-                <div id="option_date_container_edit_<?php echo esc_attr($event['event_id']); ?>" style="display:<?php echo (strtolower($event['status']) === 'in optie' ? 'block' : 'none'); ?>;">
-                    <label>Optie Datum:</label>
-                    <!-- min attribuut verwijderd -->
-                    <input type="date" name="custom_option_date" value="<?php echo esc_attr($event['option_date']); ?>">
-                </div>
-            </div>
-            <div class="splitter"></div>
-            <div class="form-section-title">Contact Gegevens</div>
-            <div class="user-selector-container">
-                <label>Selecteer gebruiker:</label>
-                <input type="text" id="user_input_edit_<?php echo esc_attr($event['event_id']); ?>" list="user_datalist_edit_<?php echo esc_attr($event['event_id']); ?>" placeholder="Zoek en selecteer gebruiker..." style="width:100%; padding:5px;">
-                <datalist id="user_datalist_edit_<?php echo esc_attr($event['event_id']); ?>">
-                    <option value="">-- Kies Gebruiker --</option>
-                    <?php 
-                    foreach ($users as $user) {
-                        $company    = get_user_meta($user->ID, 'billing_company', true);
-                        $first_name = get_user_meta($user->ID, 'first_name', true);
-                        $last_name  = get_user_meta($user->ID, 'last_name', true);
-                        $option_text = $company . " - " . $first_name . " " . $last_name;
-                        echo "<option value='" . esc_attr($option_text) . "' data-userid='" . esc_attr($user->ID) . "' data-first='" . esc_attr($first_name) . "' data-last='" . esc_attr($last_name) . "' data-company='" . esc_attr($company) . "' data-address='" . esc_attr(get_user_meta($user->ID, 'billing_address_1', true)) . "' data-postcode='" . esc_attr(get_user_meta($user->ID, 'billing_postcode', true)) . "' data-city='" . esc_attr(get_user_meta($user->ID, 'billing_city', true)) . "' data-email='" . esc_attr(get_user_meta($user->ID, 'billing_email', true)) . "' data-phone='" . esc_attr(get_user_meta($user->ID, 'billing_phone', true)) . "' >";
-                    }
-                    echo "<option value='Hageman Catering - Bas Hageman' data-userid='example' data-first='Bas' data-last='Hageman' data-company='Hageman Catering' data-address='Voorbeeldstraat 1' data-postcode='1234 AB' data-city='Voorbeeldstad' data-email='bas@example.com' data-phone='0612345678'></option>";
-                    ?>
-                </datalist>
-                <button type="button" class="btn-add-user" onclick="openNewUserPopup()">Nieuwe gebruiker toevoegen</button>
-            </div>
-            <div class="event-form-group">
-                <div>
-                    <label>Voornaam:</label>
-                    <input type="text" name="custom_first_name" value="<?php echo esc_attr($event['first_name']); ?>" placeholder="Voornaam">
-                </div>
-                <div>
-                    <label>Achternaam:</label>
-                    <input type="text" name="custom_last_name" value="<?php echo esc_attr($event['last_name']); ?>" placeholder="Achternaam">
-                </div>
-            </div>
-            <div class="event-form-group">
-                <div>
-                    <label>Email:</label>
-                    <input type="email" name="custom_email" value="<?php echo esc_attr($event['email']); ?>" placeholder="Email">
-                </div>
-                <div>
-                    <label>Telefoonnummer:</label>
-                    <input type="text" name="custom_phone" value="<?php echo esc_attr($event['phone']); ?>" placeholder="Telefoonnummer">
-                </div>
-            </div>
-            <div class="form-section-title">NAW Gegevens</div>
-            <div class="event-form-group full">
-                <div>
-                    <label>Bedrijfsnaam:</label>
-                    <input type="text" name="custom_company" value="<?php echo esc_attr($event['company']); ?>" placeholder="Bedrijfsnaam">
-                </div>
-            </div>
-            <div class="event-form-group full">
-                <div>
-                    <label>Straat + Huisnummer:</label>
-                    <input type="text" name="custom_address" value="<?php echo esc_attr($event['address']); ?>" placeholder="Straat + Huisnummer">
-                </div>
-            </div>
-            <div class="event-form-group">
-                <div>
-                    <label>Postcode:</label>
-                    <input type="text" name="custom_postcode" value="<?php echo esc_attr($event['postcode']); ?>" placeholder="Postcode">
-                </div>
-                <div>
-                    <label>Plaats:</label>
-                    <input type="text" name="custom_city" value="<?php echo esc_attr($event['city']); ?>" placeholder="Plaats">
-                </div>
-            </div>
-            <div class="splitter"></div>
-            <div class="form-section-title">Event Gegevens</div>
-            <div class="event-form-group full">
-                <div>
-                    <label>Referentie:</label>
-                    <input type="text" name="custom_reference" value="<?php echo esc_attr($event['reference']); ?>" placeholder="Referentie">
-                </div>
-            </div>
-            <div class="event-form-group full">
-                <div>
-                    <label>Datum:</label>
-                    <!-- min attribuut verwijderd -->
-                    <input type="date" name="custom_date" value="<?php echo esc_attr($event['date']); ?>" required>
-                </div>
-            </div>
-            <div class="event-form-group">
-                <div>
-                    <label>Start tijd:</label>
-                    <input type="time" name="custom_start_time" value="<?php echo esc_attr($event['start_time']); ?>">
-                </div>
-                <div>
-                    <label>Eind tijd:</label>
-                    <input type="time" name="custom_end_time" value="<?php echo esc_attr($event['end_time']); ?>">
-                </div>
-            </div>
-            <div class="event-form-group" style="gap: 10px;">
-                <div style="flex: 1;">
-                    <label>Aantal medewerkers:</label>
-                    <select name="custom_staff">
-                        <option value="">geen personeel</option>
-                        <?php for ($i = 1; $i <= 15; $i++): ?>
-                            <option value="<?php echo $i; ?>" <?php selected($event['staff'], $i); ?>><?php echo $i; ?></option>
-                        <?php endfor; ?>
-                    </select>
-                </div>
-                <div style="flex: 1;">
-                    <label>Aantal Personen:</label>
-                    <input type="number" name="custom_personen" value="<?php echo esc_attr($event['personen']); ?>" placeholder="Bijv. 50">
-                </div>
-            </div>
-            <div class="splitter"></div>
-            <div class="event-form-group full">
-                <div>
-                    <label>Notitie:</label>
-                    <textarea name="custom_note" placeholder="Er is..."><?php echo esc_textarea($event['note']); ?></textarea>
-                </div>
-            </div>
-            <div class="event-form-group full">
-                <div>
-                    <label>Party Rental Besteld:</label>
-                    <select name="custom_party_rental_besteld">
-                        <option value="">-- Selecteer --</option>
-                        <option value="ja" <?php selected($event['custom_party_rental_besteld'], 'ja'); ?>>Ja</option>
-                        <option value="nee" <?php selected($event['custom_party_rental_besteld'], 'nee'); ?>>Nee</option>
-                        <option value="niet nodig" <?php selected($event['custom_party_rental_besteld'], 'niet nodig'); ?>>Niet nodig</option>
-                    </select>
-                </div>
-            </div>
-            <!-- PDF Upload Sectie in Edit Form -->
-            <div class="form-section-title">PDF Documenten</div>
-            <div id="pdf-upload-container-edit-<?php echo esc_attr($event['event_id']); ?>">
-                <?php 
-                if( !empty($event['pdf_documents']) ){
-                    foreach($event['pdf_documents'] as $index => $pdf){
-                        echo "<div class='pdf_upload_block' style='margin-bottom:10px;'>";
-                        if(is_array($pdf)){
-                            echo "<a href='".esc_url($pdf['url'])."' target='_blank'>".esc_html(basename($pdf['url'])) ."</a> (" . esc_html($pdf['upload_date']) . ") ";
-                            // Alleen beheerder mag verwijderen
-                            if ( current_user_can('manage_options') ) {
-                                echo "<a class='delete-button' href='" . esc_url( add_query_arg(array('delete_pdf_event'=>$event['event_id'], 'delete_pdf_index'=>$index)) ) . "' onclick='return confirm(\"Weet je zeker dat je dit PDF wilt verwijderen?\");'><i class='fa fa-trash'></i> Verwijder PDF</a>";
-                            }
-                        } else {
-                            echo "<a href='".esc_url($pdf)."' target='_blank'>".esc_html(basename($pdf))."</a> ";
-                            if ( current_user_can('manage_options') ) {
-                                echo "<a class='delete-button' href='" . esc_url( add_query_arg(array('delete_pdf_event'=>$event['event_id'], 'delete_pdf_index'=>$index)) ) . "' onclick='return confirm(\"Weet je zeker dat je dit PDF wilt verwijderen?\");'><i class='fa fa-trash'></i> Verwijder PDF</a>";
-                            }
-                        }
-                        echo "</div>";
-                    }
-                }
-                ?>
-            </div>
-            <button type="button" class="add-pdf-button" onclick="addPdfUploadBlock('pdf-upload-container-edit-<?php echo esc_attr($event['event_id']); ?>')">Voeg PDF toe</button>
-            <br>
-            <button type="submit" name="custom_event_update" class="details-button" style="background-color: #009640;"><i class="fa fa-save"></i> Opslaan</button>
-        </form>
-        <script>
-        document.getElementById('user_input_edit_<?php echo esc_attr($event['event_id']); ?>').addEventListener('change', function(){
-            var inputValue = this.value;
-            var datalist = document.getElementById('user_datalist_edit_<?php echo esc_attr($event['event_id']); ?>');
-            var options = datalist.options;
-            var selectedData = null;
-            for (var i = 0; i < options.length; i++) {
-                if (options[i].value === inputValue) {
-                    selectedData = options[i];
-                    break;
-                }
-            }
-            if (selectedData) {
-                document.querySelector('input[name="custom_first_name"]').value = selectedData.getAttribute('data-first') || "";
-                document.querySelector('input[name="custom_last_name"]').value = selectedData.getAttribute('data-last') || "";
-                document.querySelector('input[name="custom_company"]').value = selectedData.getAttribute('data-company') || "";
-                document.querySelector('input[name="custom_address"]').value = selectedData.getAttribute('data-address') || "";
-                document.querySelector('input[name="custom_postcode"]').value = selectedData.getAttribute('data-postcode') || "";
-                document.querySelector('input[name="custom_city"]').value = selectedData.getAttribute('data-city') || "";
-                document.querySelector('input[name="custom_email"]').value = selectedData.getAttribute('data-email') || "";
-                document.querySelector('input[name="custom_phone"]').value = selectedData.getAttribute('data-phone') || "";
-            }
-        });
-        </script>
-    </div>
-    <?php endif; ?>
 
-    <?php
-    echo "<div class='orders-container'>";
-    if ( empty($combined) ) {
-        echo "<br>Er zijn geen items gevonden.<br><br><br>";
+    window.fetchAgenda = fetchAgenda;
+}
+
+function initModalFunctionality() {
+    const modal = document.getElementById("wc-order-modal");
+    const closeBtn = document.querySelector(".wc-order-modal-close");
+    const modalBody = document.getElementById("wc-order-modal-body");
+    const agendaVisibility = document.querySelector(".wc-weekagenda-wrapper").dataset.agendaVisibility;
+
+    document.querySelectorAll(".wc-weekagenda-item-google").forEach(item => {
+        item.removeEventListener("click", handleOrderItemClick);
+        item.addEventListener("click", handleOrderItemClick);
+    });
+
+    function handleOrderItemClick() {
+        const orderId = this.dataset.orderId;
+        const orderType = this.dataset.orderType;
+        modal.style.display = "block";
+        modalBody.innerHTML = \'<div style="text-align:center;padding:20px;">Laden bestelgegevens...</div>\';
+
+        const formData = new FormData();
+        formData.append("action", "wc_get_order_details_ajax");
+        formData.append("order_id", orderId);
+        formData.append("order_type", orderType);
+        formData.append("agenda_visibility_setting", agendaVisibility);
+
+        fetch("' . admin_url('admin-ajax.php') . '", {
+            method: "POST",
+            body: formData
+        })
+        .then(res => res.json())
+        .then(data => {
+            modalBody.innerHTML = data.success ? data.data :
+                \'<div style="text-align:center;padding:20px;color:red;">\' + data.data + \'</div>\';
+        })
+        .catch(() => {
+            modalBody.innerHTML = \'<div style="text-align:center;padding:20px;color:red;">Fout bij het laden van bestelgegevens.</div>\';
+        });
     }
-    foreach ( $combined as $item ) {
-        if ( $item['type'] === 'order' ) {
-            $order = $item['data'];
-            $order_id = $order->get_id();
-            $is_cancelled = ( $order->get_status() === 'cancelled' );
-            $billing_company = $order->get_billing_company();
-            $delivery_date = get_post_meta( $order_id, 'pi_system_delivery_date', true );
-            $delivery_date_formatted = $delivery_date ? date_i18n( 'l j F Y', strtotime($delivery_date) ) : '';
-            $delivery_time = get_post_meta( $order_id, 'pi_delivery_time', true );
-            $order_end_time = get_post_meta( $order_id, 'order_eindtijd', true );
-            $order_reference = get_post_meta( $order_id, 'order_reference', true );
-            $order_personen = get_post_meta( $order_id, 'order_personen', true );
-            $customer_note = $order->get_customer_note();
-            $order_number = $order->get_order_number();
-            $display_number = ( isset($rename_numbers[$order_number]) ) ? $rename_numbers[$order_number] : "#$order_number";
-            ?>
-            <div class="order-card <?php echo $is_cancelled ? 'cancelled-order' : ''; ?>">
-                <div class="order-card-header">
-                    <?php 
-                        if($is_cancelled){
-                            echo "<span class='order-badge cancelled'>$display_number</span>";
-                        } else {
-                            echo "<span class='order-badge default'>$display_number</span>";
-                        }
-                    ?>
-                </div>
-                <div class="order-card-body">
-                    <div><strong>Bedrijfsnaam:</strong> <?php echo esc_html($billing_company); ?></div>
-                    <div><strong>Datum:</strong> <?php echo esc_html($delivery_date_formatted); ?></div>
-                    <div><strong>Tijd:</strong> <?php echo esc_html($delivery_time . " - " . $order_end_time); ?></div>
-                    <div><strong>Zaal:</strong> <?php echo esc_html( get_post_meta($order_id, 'order_location', true) ); ?></div>
-                    <div><strong>Referentie:</strong> <?php echo esc_html($order_reference); ?></div>
-                    <div><strong>Party Rental Besteld:</strong> <?php echo esc_html( get_post_meta($order_id, 'party_rental_besteld', true) ); ?></div>
-                    <div><strong>Aantal Personen:</strong> <?php echo esc_html($order_personen); ?></div>
-                    <div><strong>Notitie:</strong> <?php echo esc_html($customer_note); ?></div>
-                    <div class="action-buttons">
-                        <span class="details-button" onclick="openPopup('<?php echo esc_js($order_number); ?>')"><i class="fa fa-eye"></i> Details</span>
-                        <span class="pdf-button" onclick="window.open('<?php echo esc_url( wp_nonce_url( admin_url( 'admin-ajax.php?action=generate_wpo_wcpdf&document_type=packing-slip&order_ids=' . $order_id ), 'generate_wpo_wcpdf' ) ); ?>','_blank')"><i class="fa fa-file-pdf-o"></i> PDF</span>
-                    </div>
-                </div>
-            </div>
-            <div id="details-<?php echo esc_attr($order_number); ?>" class="order-details">
-                <h3>Order Details: <?php echo esc_html($display_number); ?> - <?php echo esc_html($delivery_date_formatted); ?></h3>
-                <?php
-                echo "<div><strong>Adres:</strong> " . esc_html($order->get_billing_address_1()) . "</div>";
-                echo "<div><strong>Contactpersoon:</strong> " . esc_html($order->get_billing_first_name() . " " . $order->get_billing_last_name()) . "</div>";
-                echo "<div><strong>Contact:</strong> " . esc_html($order->get_billing_email() . " / " . $order->get_billing_phone()) . "</div>";
-                echo "<div><strong>Zaal:</strong> " . esc_html( get_post_meta($order_id, 'order_location', true) ) . "</div>";
-                echo "<div><strong>Referentie:</strong> " . esc_html($order_reference) . "</div>";
-                echo "<div><strong>Party Rental Besteld:</strong> " . esc_html( get_post_meta($order_id, 'party_rental_besteld', true) ) . "</div>";
-                echo "<div><strong>Tijd:</strong> " . esc_html($delivery_time . " - " . $order_end_time) . "</div>";
-                echo "<div><strong>Aantal Personen:</strong> " . esc_html($order_personen) . "</div>";
-                echo "<div><strong>Notitie:</strong> " . esc_html($customer_note) . "</div>";
-                ?>
-            </div>
-            <?php
-        } else {
-            $event = $item['data'];
-            $formatted_date = date_i18n( 'l j F Y', strtotime($event['date']) );
-            $display_number = ! empty($event['event_number']) ? $event['event_number'] : $event['event_id'];
-            if ( isset($rename_numbers[$display_number]) ) {
-                $display_number = $rename_numbers[$display_number];
-            } else {
-                $display_number = "#$display_number";
-            }
-            if ( isset($event['status']) && strtolower($event['status']) === 'akkoord' ) {
-                $badge_class = 'order-badge event event-akkoord';
-                $option_badge = '';
-            } elseif ( isset($event['status']) && strtolower($event['status']) === 'in optie' ) {
-                $badge_class = 'order-badge event event-in optie';
-                if ( ! empty($event['option_date']) ) {
-                    $today = new DateTime(date('Y-m-d'));
-                    $optionDate = new DateTime($event['option_date']);
-                    $diff = $today->diff($optionDate);
-                    if ( $diff->days == 0 ) {
-                        $countdown = "verloopt vandaag";
-                    } elseif ( ! $diff->invert ) {
-                        $countdown = "nog " . $diff->days . " dagen in optie";
-                    } else {
-                        $countdown = $diff->days . " dagen verlopen";
-                    }
-                    $class = 'option-badge';
-                    if ( $diff->invert ) {
-                        $class .= ' expired';
-                    }
-                    $option_badge = '<span class="' . $class . '">' . $countdown . '</span>';
-                } else {
-                    $option_badge = '';
-                }
-            } elseif ( isset($event['status']) && strtolower($event['status']) === 'geannuleerd' ) {
-                $badge_class = 'order-badge event event-geannuleerd';
-                $option_badge = '';
-            } else {
-                $badge_class = 'order-badge event';
-                $option_badge = '';
-            }
-            ?>
-            <div class="order-card" style="background-color: #2E2E3A;">
-                <div class="event-card-header">
-                    <?php 
-                        echo "<span class='$badge_class'>$display_number</span> " . $option_badge;
-                    ?>
-                </div>
-                <div class="order-card-body">
-                    <div><strong><?php echo esc_html($event['company']); ?></strong><br>
-                    <?php echo esc_html($event['reference']); ?><br>
-                    <?php echo esc_html($formatted_date); ?><br>
-                    <?php echo esc_html($event['start_time'] . " - " . $event['end_time']); ?><br></div>
-                    <div><strong>Aantal Personen:</strong> <?php echo esc_html($event['personen']); ?><br>
-                    <strong>Aantal Medewerkers:</strong> <?php echo esc_html($event['staff']); ?></div>
-                    <div><strong>Notitie:</strong> <?php echo esc_html($event['note']); ?></div>
-                    <div><strong>Party Rental Besteld:</strong> <?php echo esc_html($event['custom_party_rental_besteld']); ?></div>
-                    <?php
-                    if ( isset($event['custom_client_tag']) && $event['custom_client_tag'] && $combined_filter !== 'eigen' ) {
-                        echo "<div><strong>Product Tag:</strong> " . esc_html($event['custom_client_tag']) . "</div>";
-                    }
-                    ?>
-                    <div class="action-buttons">
-                        <span class="details-button" onclick="openPopupEvent('<?php echo esc_js($event['event_id']); ?>')"><i class="fa fa-eye"></i> Details</span>
-                        <?php if ( current_user_can('manage_options') ) : ?>
-                        <span class="edit-button" onclick="openEditEvent('<?php echo esc_js($event['event_id']); ?>')"><i class="fa fa-edit"></i> Bewerk</span>
-                        <a class="delete-button" href="<?php echo esc_url( add_query_arg('delete_event', $event['event_id']) ); ?>" onclick="return confirm('Weet je zeker dat je dit event wilt verwijderen?');"><i class="fa fa-trash"></i> Verwijder</a>
-                        <?php endif; ?>
-                    </div>
-                </div>
-            </div>
-            <div id="event-details-<?php echo esc_attr($event['event_id']); ?>" class="event-details">
-                <h3><?php echo esc_html($display_number); ?> - <?php echo esc_html($formatted_date); ?></h3>
-                <div><strong>Adres:</strong> <?php echo esc_html($event['address']); ?>, <?php echo esc_html($event['postcode'] . ", " . $event['city']); ?></div><br>
-                <div><strong>Contactpersoon:</strong> <?php echo esc_html($event['first_name'] . " " . $event['last_name']); ?></div>
-                <div><strong>Contact:</strong> <?php echo esc_html($event['email'] . " / " . $event['phone']); ?></div><br>
-                <div><strong>Referentie:</strong> <?php echo esc_html($event['reference']); ?></div>
-                <div><strong>Party Rental Besteld:</strong> <?php echo esc_html($event['custom_party_rental_besteld']); ?></div>
-                <div><strong>Tijd:</strong> <?php echo esc_html($event['start_time'] . " - " . $event['end_time']); ?></div><br>
-                <div><strong>Aantal Personen:</strong> <?php echo esc_html($event['personen']); ?></div>
-                <div><strong>Aantal Medewerkers:</strong> <?php echo esc_html($event['staff']); ?></div><br>
-                <div><strong>Notitie:</strong><br><?php echo esc_html($event['note']); ?></div>
-                <?php
-                if ( isset($event['custom_client_tag']) && $event['custom_client_tag'] && $combined_filter !== 'eigen' ) {
-                    echo "<div><strong>Product Tag:</strong> " . esc_html($event['custom_client_tag']) . "</div>";
-                }
-                if ( ! empty($event['pdf_documents']) ) {
-                    echo "<div><strong>PDF Documenten:</strong><br>";
-                    foreach($event['pdf_documents'] as $index => $pdf){
-                        if ( is_array($pdf) ) {
-                            // Alleen als public of beheerder
-                            if ($pdf['visibility'] === 'private' && ! current_user_can('manage_options')) {
-                                continue;
-                            }
-                            echo "<a href='".esc_url($pdf['url'])."' target='_blank'>".esc_html(basename($pdf['url'])) ."</a> (" . esc_html($pdf['upload_date']) . ") ";
-                            if ( current_user_can('manage_options') ) {
-                                echo "<a class='delete-button' href='" . esc_url( add_query_arg(array('delete_pdf_event'=>$event['event_id'], 'delete_pdf_index'=>$index)) ) . "' onclick='return confirm(\"Weet je zeker dat je dit PDF wilt verwijderen?\");'><i class='fa fa-trash'></i> Verwijder PDF</a><br>";
-                            }
-                        } else {
-                            echo "<a href='".esc_url($pdf)."' target='_blank'>".esc_html(basename($pdf))."</a><br>";
-                        }
-                    }
-                    echo "</div>";
-                }
-                if ( isset($event['created_by']) && isset($event['last_modified_by']) ) {
-                    $creator = get_userdata($event['created_by']);
-                    $modifier = get_userdata($event['last_modified_by']);
-                    echo "<div class='logboek'>";
-                    echo "<div>Aangemaakt door: " . ($creator ? esc_html($creator->display_name) : 'Onbekend') . " op " . (isset($event['created_at']) ? esc_html($event['created_at']) : '') . "</div>";
-                    echo "<div>Bewerkt door: " . ($modifier ? esc_html($modifier->display_name) : 'Onbekend') . " op " . (isset($event['last_modified_at']) ? esc_html($event['last_modified_at']) : '') . "</div>";
-                    echo "</div>";
-                }
-                ?>
-            </div>
-            <div id="event-edit-<?php echo esc_attr($event['event_id']); ?>" style="display:none;">
-                <h3>Event <?php echo esc_html($display_number); ?> Bewerken</h3>
-                <form method="post" id="edit-event-form" enctype="multipart/form-data">
-                    <input type="hidden" name="custom_event_id" value="<?php echo esc_attr($event['event_id']); ?>">
-                    <div class="form-section-title">Event Gegevens</div>
-                    <div class="event-form-group full">
-                        <div>
-                            <label>Event Nummer (Order Nummer):</label>
-                            <input type="text" name="custom_event_number" value="<?php echo esc_attr($event['event_number']); ?>" placeholder="Bijv. 12345">
-                        </div>
-                    </div>
-                    <div class="event-form-group">
-                        <div>
-                            <label>Status:</label>
-                            <select name="custom_status" id="edit_custom_status_<?php echo esc_attr($event['event_id']); ?>" title="Selecteer status (bijv. akkoord, in optie of geannuleerd)" onchange="toggleOptionDate(this.value, 'option_date_container_edit_<?php echo esc_attr($event['event_id']); ?>')">
-                                <option value="akkoord" <?php selected(strtolower($event['status']), 'akkoord'); ?>>Akkoord</option>
-                                <option value="in optie" <?php selected(strtolower($event['status']), 'in optie'); ?>>In optie</option>
-                                <option value="geannuleerd" <?php selected(strtolower($event['status']), 'geannuleerd'); ?>>Geannuleerd</option>
-                            </select>
-                        </div>
-                        <div id="option_date_container_edit_<?php echo esc_attr($event['event_id']); ?>" style="display:<?php echo (strtolower($event['status']) === 'in optie' ? 'block' : 'none'); ?>;">
-                            <label>Optie Datum:</label>
-                            <!-- min attribuut verwijderd -->
-                            <input type="date" name="custom_option_date" value="<?php echo esc_attr($event['option_date']); ?>">
-                        </div>
-                    </div>
-                    <div class="splitter"></div>
-                    <div class="form-section-title">Contact Gegevens</div>
-                    <div class="user-selector-container">
-                        <label>Selecteer gebruiker:</label>
-                        <input type="text" id="user_input_edit_<?php echo esc_attr($event['event_id']); ?>" list="user_datalist_edit_<?php echo esc_attr($event['event_id']); ?>" placeholder="Zoek en selecteer gebruiker..." style="width:100%; padding:5px;">
-                        <datalist id="user_datalist_edit_<?php echo esc_attr($event['event_id']); ?>">
-                            <option value="">-- Kies Gebruiker --</option>
-                            <?php 
-                            foreach ($users as $user) {
-                                $company    = get_user_meta($user->ID, 'billing_company', true);
-                                $first_name = get_user_meta($user->ID, 'first_name', true);
-                                $last_name  = get_user_meta($user->ID, 'last_name', true);
-                                $option_text = $company . " - " . $first_name . " " . $last_name;
-                                echo "<option value='" . esc_attr($option_text) . "' data-userid='" . esc_attr($user->ID) . "' data-first='" . esc_attr($first_name) . "' data-last='" . esc_attr($last_name) . "' data-company='" . esc_attr($company) . "' data-address='" . esc_attr(get_user_meta($user->ID, 'billing_address_1', true)) . "' data-postcode='" . esc_attr(get_user_meta($user->ID, 'billing_postcode', true)) . "' data-city='" . esc_attr(get_user_meta($user->ID, 'billing_city', true)) . "' data-email='" . esc_attr(get_user_meta($user->ID, 'billing_email', true)) . "' data-phone='" . esc_attr(get_user_meta($user->ID, 'billing_phone', true)) . "' >";
-                            }
-                            echo "<option value='Hageman Catering - Bas Hageman' data-userid='example' data-first='Bas' data-last='Hageman' data-company='Hageman Catering' data-address='Voorbeeldstraat 1' data-postcode='1234 AB' data-city='Voorbeeldstad' data-email='bas@example.com' data-phone='0612345678'></option>";
-                            ?>
-                        </datalist>
-                        <button type="button" class="btn-add-user" onclick="openNewUserPopup()">Nieuwe klant toevoegen</button>
-                    </div>
-                    <div class="event-form-group">
-                        <div>
-                            <label>Voornaam:</label>
-                            <input type="text" name="custom_first_name" value="<?php echo esc_attr($event['first_name']); ?>" placeholder="Voornaam">
-                        </div>
-                        <div>
-                            <label>Achternaam:</label>
-                            <input type="text" name="custom_last_name" value="<?php echo esc_attr($event['last_name']); ?>" placeholder="Achternaam">
-                        </div>
-                    </div>
-                    <div class="event-form-group">
-                        <div>
-                            <label>Email:</label>
-                            <input type="email" name="custom_email" value="<?php echo esc_attr($event['email']); ?>" placeholder="Email">
-                        </div>
-                        <div>
-                            <label>Telefoonnummer:</label>
-                            <input type="text" name="custom_phone" value="<?php echo esc_attr($event['phone']); ?>" placeholder="Telefoonnummer">
-                        </div>
-                    </div>
-                    <div class="form-section-title">NAW Gegevens</div>
-                    <div class="event-form-group full">
-                        <div>
-                            <label>Bedrijfsnaam:</label>
-                            <input type="text" name="custom_company" value="<?php echo esc_attr($event['company']); ?>" placeholder="Bedrijfsnaam">
-                        </div>
-                    </div>
-                    <div class="event-form-group full">
-                        <div>
-                            <label>Straat + Huisnummer:</label>
-                            <input type="text" name="custom_address" value="<?php echo esc_attr($event['address']); ?>" placeholder="Straat + Huisnummer">
-                        </div>
-                    </div>
-                    <div class="event-form-group">
-                        <div>
-                            <label>Postcode:</label>
-                            <input type="text" name="custom_postcode" value="<?php echo esc_attr($event['postcode']); ?>" placeholder="Postcode">
-                        </div>
-                        <div>
-                            <label>Plaats:</label>
-                            <input type="text" name="custom_city" value="<?php echo esc_attr($event['city']); ?>" placeholder="Plaats">
-                        </div>
-                    </div>
-                    <div class="splitter"></div>
-                    <div class="form-section-title">Event Gegevens</div>
-                    <div class="event-form-group full">
-                        <div>
-                            <label>Referentie:</label>
-                            <input type="text" name="custom_reference" value="<?php echo esc_attr($event['reference']); ?>" placeholder="Referentie">
-                        </div>
-                    </div>
-                    <div class="event-form-group full">
-                        <div>
-                            <label>Datum:</label>
-                            <!-- min attribuut verwijderd -->
-                            <input type="date" name="custom_date" value="<?php echo esc_attr($event['date']); ?>" required>
-                        </div>
-                    </div>
-                    <div class="event-form-group">
-                        <div>
-                            <label>Start tijd:</label>
-                            <input type="time" name="custom_start_time" value="<?php echo esc_attr($event['start_time']); ?>">
-                        </div>
-                        <div>
-                            <label>Eind tijd:</label>
-                            <input type="time" name="custom_end_time" value="<?php echo esc_attr($event['end_time']); ?>">
-                        </div>
-                    </div>
-                    <div class="event-form-group" style="gap: 10px;">
-                        <div style="flex: 1;">
-                            <label>Aantal medewerkers:</label>
-                            <select name="custom_staff">
-                                <option value="">geen personeel</option>
-                                <?php for ($i = 1; $i <= 15; $i++): ?>
-                                    <option value="<?php echo $i; ?>" <?php selected($event['staff'], $i); ?>><?php echo $i; ?></option>
-                                <?php endfor; ?>
-                            </select>
-                        </div>
-                        <div style="flex: 1;">
-                            <label>Aantal Personen:</label>
-                            <input type="number" name="custom_personen" value="<?php echo esc_attr($event['personen']); ?>" placeholder="Bijv. 50">
-                        </div>
-                    </div>
-                    <div class="splitter"></div>
-                    <div class="event-form-group full">
-                        <div>
-                            <label>Notitie:</label>
-                            <textarea name="custom_note" placeholder="Er is..."><?php echo esc_textarea($event['note']); ?></textarea>
-                        </div>
-                    </div>
-                    <div class="event-form-group full">
-                        <div>
-                            <label>Party Rental Besteld:</label>
-                            <select name="custom_party_rental_besteld">
-                                <option value="">-- Selecteer --</option>
-                                <option value="ja" <?php selected($event['custom_party_rental_besteld'], 'ja'); ?>>Ja</option>
-                                <option value="nee" <?php selected($event['custom_party_rental_besteld'], 'nee'); ?>>Nee</option>
-                                <option value="niet nodig" <?php selected($event['custom_party_rental_besteld'], 'niet nodig'); ?>>Niet nodig</option>
-                            </select>
-                        </div>
-                    </div>
-                    <!-- PDF Upload Sectie in Edit Form -->
-                    <div class="form-section-title">PDF Documenten</div>
-                    <div id="pdf-upload-container-edit-<?php echo esc_attr($event['event_id']); ?>">
-                        <?php 
-                        if( !empty($event['pdf_documents']) ){
-                            foreach($event['pdf_documents'] as $index => $pdf){
-                                echo "<div class='pdf_upload_block' style='margin-bottom:10px;'>";
-                                if(is_array($pdf)){
-                                    echo "<a href='".esc_url($pdf['url'])."' target='_blank'>".esc_html(basename($pdf['url'])) ."</a> (" . esc_html($pdf['upload_date']) . ") ";
-                                    echo "<a class='delete-button' href='" . esc_url( add_query_arg(array('delete_pdf_event'=>$event['event_id'], 'delete_pdf_index'=>$index)) ) . "' onclick='return confirm(\"Weet je zeker dat je dit PDF wilt verwijderen?\");'><i class='fa fa-trash'></i> Verwijder PDF</a>";
-                                } else {
-                                    echo "<a href='".esc_url($pdf)."' target='_blank'>".esc_html(basename($pdf))."</a> ";
-                                    echo "<a class='delete-button' href='" . esc_url( add_query_arg(array('delete_pdf_event'=>$event['event_id'], 'delete_pdf_index'=>$index)) ) . "' onclick='return confirm(\"Weet je zeker dat je dit PDF wilt verwijderen?\");'><i class='fa fa-trash'></i> Verwijder PDF</a>";
-                                }
-                                echo "</div>";
-                            }
-                        }
-                        ?>
-                    </div>
-                    <button type="button" class="add-pdf-button" onclick="addPdfUploadBlock('pdf-upload-container-edit-<?php echo esc_attr($event['event_id']); ?>')">Voeg PDF toe</button>
-                    <br>
-                    <button type="submit" name="custom_event_update" class="details-button" style="background-color: #009640;"><i class="fa fa-save"></i> Opslaan</button>
-                </form>
-                <script>
-                document.getElementById('user_input_edit_<?php echo esc_attr($event['event_id']); ?>').addEventListener('change', function(){
-                    var inputValue = this.value;
-                    var datalist = document.getElementById('user_datalist_edit_<?php echo esc_attr($event['event_id']); ?>');
-                    var options = datalist.options;
-                    var selectedData = null;
-                    for (var i = 0; i < options.length; i++) {
-                        if (options[i].value === inputValue) {
-                            selectedData = options[i];
-                            break;
-                        }
-                    }
-                    if (selectedData) {
-                        document.querySelector('input[name="custom_first_name"]').value = selectedData.getAttribute('data-first') || "";
-                        document.querySelector('input[name="custom_last_name"]').value = selectedData.getAttribute('data-last') || "";
-                        document.querySelector('input[name="custom_company"]').value = selectedData.getAttribute('data-company') || "";
-                        document.querySelector('input[name="custom_address"]').value = selectedData.getAttribute('data-address') || "";
-                        document.querySelector('input[name="custom_postcode"]').value = selectedData.getAttribute('data-postcode') || "";
-                        document.querySelector('input[name="custom_city"]').value = selectedData.getAttribute('data-city') || "";
-                        document.querySelector('input[name="custom_email"]').value = selectedData.getAttribute('data-email') || "";
-                        document.querySelector('input[name="custom_phone"]').value = selectedData.getAttribute('data-phone') || "";
-                    }
-                });
-                </script>
-            </div>
-            <?php
-        }
+
+    closeBtn.onclick = () => modal.style.display = "none";
+    window.onclick = e => { if (e.target == modal) modal.style.display = "none"; };
+}
+
+function initNewMaatwerkButton() {
+    const btn = document.querySelector(".wc-new-maatwerk-button");
+    if (!btn) return;
+    btn.removeEventListener("click", openMaatwerk);
+    btn.addEventListener("click", openMaatwerk);
+    function openMaatwerk(e) {
+        e.preventDefault();
+        window.open("https://banquetingportaal.nl/alg/maatwerk", "_blank",
+            "width=800,height=800,top="+((screen.height/2)-(800/2))+",left="+((screen.width/2)-(800/2)));
     }
-    echo "</div>";
-    
-    // Navigatieknoppen (alleen tonen indien geen custom periode is ingesteld)
-    if ( ! ( isset($_GET['custom_from']) && !empty($_GET['custom_from']) && isset($_GET['custom_to']) && !empty($_GET['custom_to']) ) ) {
-        echo "<div class='navigation-buttons'>";
-        if ($weeks_ahead > 0) {
-            $prev_week_url = add_query_arg( 'weeks_ahead', $weeks_ahead - 1 );
-            $prev_week_url = add_query_arg( array(
-                'day'             => $filter_day ?: false,
-                'order_search'    => $filter_order ?: false,
-                'custom_from'     => isset($_GET['custom_from']) ? $_GET['custom_from'] : false,
-                'custom_to'       => isset($_GET['custom_to']) ? $_GET['custom_to'] : false,
-                'combined_filter' => $combined_filter ?: false,
-            ), $prev_week_url );
-            echo "<a href='" . esc_url($prev_week_url) . "' class='navigation-button'>Vorige periode</a> ";
-        }
-        $next_week_url = add_query_arg( 'weeks_ahead', $weeks_ahead + 1 );
-        $next_week_url = add_query_arg( array(
-            'day'             => $filter_day ?: false,
-            'order_search'    => $filter_order ?: false,
-            'custom_from'     => isset($_GET['custom_from']) ? $_GET['custom_from'] : false,
-            'custom_to'       => isset($_GET['custom_to']) ? $_GET['custom_to'] : false,
-            'combined_filter' => $combined_filter ?: false,
-        ), $next_week_url );
-        echo "<a href='" . esc_url( $next_week_url ) . "' class='navigation-button'>Volgende periode</a>";
-        echo "</div>";
+}
+
+function initAddCustomerButton() {
+    const btn = document.querySelector(".wc-add-customer-button");
+    if (!btn) return;
+    btn.removeEventListener("click", openAdd);
+    btn.addEventListener("click", openAdd);
+    function openAdd(e) {
+        e.preventDefault();
+        window.open("https://banquetingportaal.nl/alg/add-klant/", "_blank",
+            "width=800,height=800,top="+((screen.height/2)-(800/2))+",left="+((screen.width/2)-(800/2)));
     }
-    
-    $output = ob_get_clean();
-    set_transient( $cache_key, $output, 300 );
+}
+
+function initTurflijstButton() {
+    const btn = document.querySelector(".wc-turflijst-button");
+    if (!btn) return;
+    btn.removeEventListener("click", openTurf);
+    btn.addEventListener("click", openTurf);
+    function openTurf(e) {
+        e.preventDefault();
+        window.open("https://banquetingportaal.nl/alg/turf/", "_blank",
+            "width=800,height=800,top="+((screen.height/2)-(800/2))+",left="+((screen.width/2)-(800/2)));
+    }
+}
+
+function initRefreshButton() {
+    const btn = document.querySelector(".wc-refresh-button");
+    if (!btn) return;
+    btn.removeEventListener("click", () => {});
+    btn.addEventListener("click", e => { e.preventDefault(); location.reload(); });
+}
+
+function initFilters() {
+    const dateFilter = document.getElementById("wc-date-filter");
+    dateFilter.removeEventListener("change", handleDateFilter);
+    dateFilter.addEventListener("change", handleDateFilter);
+    function handleDateFilter() {
+        const d = new Date(this.value+"T00:00:00");
+        const day = (d.getDay()+6)%7;
+        d.setDate(d.getDate() - day);
+        const mon = d.getFullYear()+"/"+String(d.getMonth()+1).padStart(2,"0")+"/"+String(d.getDate()).padStart(2,"0");
+        fetchAgenda(mon, document.querySelector(".wc-weekagenda-wrapper").dataset.agendaVisibility);
+    }
+}
+
+function initDailySummaryButtons() {
+    const modal = document.getElementById("wc-order-modal");
+    const body = document.getElementById("wc-order-modal-body");
+    document.querySelectorAll(".wc-daily-summary-button").forEach(btn => {
+        btn.removeEventListener("click", handleSummary);
+        btn.addEventListener("click", handleSummary);
+    });
+    function handleSummary() {
+        const day = this.dataset.dayDate;
+        modal.style.display = "block";
+        body.innerHTML = \'<div style="text-align:center;padding:20px;">Laden dagoverzicht...</div>\';
+        const fd = new FormData();
+        fd.append("action","wc_get_daily_product_summary_ajax");
+        fd.append("day_date",day);
+        fetch("' . admin_url('admin-ajax.php') . '", { method:"POST", body:fd })
+        .then(r=>r.json())
+        .then(d=> body.innerHTML = d.success? d.data : \'<div style="text-align:center;color:red;">\' + d.data + \'</div>\')
+        .catch(()=> body.innerHTML = \'<div style="text-align:center;color:red;">Fout bij laden dagoverzicht.</div>\');
+    }
+}
+</script>
+';
+
     return $output;
 }
 
 /**
- * Frontend Shortcode
+ * Genereert de agenda-inhoud (dagen en items) inclusief de styling.
+ * Deze functie wordt aangeroepen door de shortcode en de AJAX-handler.
+ *
+ * @param array $agenda De georganiseerde bestelgegevens.
+ * @param int $week_start_timestamp De timestamp van het begin van de week.
+ * @return string De HTML output van de agenda-inhoud en styling.
  */
-function display_orders_current_week_lite_frontend( $atts ) {
-    return get_orders_current_week_output( true );
-}
-add_shortcode( 'orders_current_week_lite', 'display_orders_current_week_lite_frontend' );
+function generate_agenda_content($agenda, $week_start_timestamp, $day_filter = '') {
 
-/**
- * Backend functie
- */
-function display_orders_current_week_lite_backend() {
-    echo get_orders_current_week_output();
-}
+    $output = '';
 
-/**
- * Voeg backend pagina toe aan het adminmenu: "Orders Overzicht"
- */
-add_action( 'admin_menu', 'register_week_overzicht_admin_page' );
-function register_week_overzicht_admin_page() {
-    add_menu_page(
-        'Orders Overzicht',
-        'Orders Overzicht',
-        'manage_options',
-        'week-overzicht',
-        'render_week_overzicht_admin_page',
-        'dashicons-calendar-alt',
-        3
+    $dagen_data = array(
+        'maandag'   => array('emoji' => ''),
+        'dinsdag'   => array('emoji' => ''),
+        'woensdag'  => array('emoji' => ''),
+        'donderdag' => array('emoji' => ''),
+        'vrijdag'   => array('emoji' => ''),
+        'zaterdag'  => array('emoji' => ''),
+        'zondag'    => array('emoji' => '')
     );
+    $dagen_keys = array_keys($dagen_data);
+
+    for ($i = 0; $i < 7; $i++) {
+        $day_ts = strtotime("+$i day", $week_start_timestamp);
+        $day_key = date('Y/m/d', $day_ts);
+		$day_link = date('Y-m-d', $day_ts);
+        $dagnaam = $dagen_keys[$i];
+		if ($day_filter && $day_filter !== $day_link) {
+				continue;
+		}
+        $datum   = date('d-m-Y', $day_ts);
+        $emoji   = $dagen_data[$dagnaam]['emoji'];
+
+// Bouw eerst de huidige URL (path + query) en verwijder oude 'day'
+$current_url = ( is_ssl() ? 'https://' : 'http://' )
+             . $_SERVER['HTTP_HOST']
+             . $_SERVER['REQUEST_URI'];
+$base_url    = remove_query_arg( 'filter_day', $current_url );
+$link        = esc_url( add_query_arg( 'filter_day', $day_link, $base_url ) );
+
+		
+// Render klikbare dagnaam
+$output .= '<div class="wc-weekagenda-dag-google" data-day-index="'. $i .'">';
+$output .= '<h4><a href="'. $link .'">'
+         . ucfirst($dagnaam)
+         . '</a></h4>';
+		
+		
+        $output .= '<p class="wc-day-date">' . $datum . '</p>'; // Datum onder de dagnaam
+
+        $has_woocommerce_orders = false; // Vlag om te controleren of er WC orders zijn voor deze dag
+
+        if (isset($agenda[$day_key])) {
+            // Sorteer bestellingen op tijd, ongeacht type
+            usort($agenda[$day_key], function($a, $b) {
+                $time_a = ($a['tijd'] === '🕒') ? '00:00' : $a['tijd'];
+                $time_b = ($b['tijd'] === '🕒') ? '00:00' : $b['tijd'];
+                return strcmp($time_a, $time_b);
+            });
+
+            foreach ($agenda[$day_key] as $item) {
+                if ($item['type'] === 'woocommerce') {
+                    $has_woocommerce_orders = true; // Stel de vlag in als er een WC order is
+                }
+
+                // Bepaal de badge klasse op basis van de orderstatus EN het type
+                $badge_class = 'wc-order-badge';
+                $item_type_class = ''; // Nieuwe variabele voor de item type klasse
+                $order_number_display = esc_html($item['sequential_order_number']); // Standaard weergave
+                $option_info_badge = ''; // Variabele voor "In optie tot" informatie in badge
+
+                if ($item['type'] === 'woocommerce') {
+                    $item_type_class = 'wc-weekagenda-item-woocommerce'; // Blauwe streep
+                    error_log('DEBUG: WooCommerce Order ID: ' . $item['order_id'] . ' Post Status: ' . $item['post_status']); // DEBUG LOG
+                    if ($item['post_status'] === 'wc-processing' || $item['post_status'] === 'wc-completed') { // Processing en Completed zijn groen
+                        $badge_class .= ' status-wc-green';
+                    } else if ($item['post_status'] === 'wc-on-hold') { // On-hold blijft oranje
+                        $badge_class .= ' status-wc-orange';
+                    } else if ($item['post_status'] === 'wc-cancelled') {
+                        $badge_class .= ' status-wc-red';
+                    }
+                } else if ($item['type'] === 'maatwerk') {
+                    $item_type_class = 'wc-weekagenda-item-maatwerk'; // Paarse streep
+                    $maatwerk_status = $item['post_status'];
+                    $optie_geldig_tot = isset($item['optie_geldig_tot']) ? $item['optie_geldig_tot'] : '';
+
+
+                    // DEBUG LOG: Log de maatwerk status en optie_geldig_tot
+                    error_log('DEBUG: Maatwerk Order ID: ' . $item['order_id'] . ' Status: ' . $maatwerk_status . ' Optie geldig tot: ' . $optie_geldig_tot); // DEBUG LOG
+
+                    // Formatteer de maatwerk status voor weergave
+                    $formatted_maatwerk_status = ucfirst(str_replace('_', ' ', $maatwerk_status));
+
+                    // Nieuwe logica voor maatwerk statussen: 'geaccepteerd' en 'afgewezen' worden nu ook groen/rood
+                    if ($maatwerk_status === 'in_behandeling' || $maatwerk_status === 'bevestigd' || $maatwerk_status === 'afgerond' || $maatwerk_status === 'geaccepteerd') {
+                        $badge_class .= ' status-maatwerk-green'; // Groen voor in behandeling, bevestigd, afgerond en geaccepteerd
+                    } else if ($maatwerk_status === 'geannuleerd' || $maatwerk_status === 'afgewezen') {
+                        $badge_class .= ' status-maatwerk-red'; // Rood voor geannuleerd en afgewezen
+                    } else if ($maatwerk_status === 'in-optie' || $maatwerk_status === 'nieuw') {
+                        $badge_class .= ' status-maatwerk-orange';
+
+                        // Toon "in optie tot" informatie in de badge
+                        if ($maatwerk_status === 'in-optie' && !empty($optie_geldig_tot)) {
+                            $option_date_parsed = null;
+                            // Probeer verschillende datumformaten
+                            if (DateTime::createFromFormat('Y-m-d', $optie_geldig_tot)) {
+                                $option_date_parsed = DateTime::createFromFormat('Y-m-d', $optie_geldig_tot);
+                            } elseif (DateTime::createFromFormat('d-m-Y', $optie_geldig_tot)) {
+                                $option_date_parsed = DateTime::createFromFormat('d-m-Y', $optie_geldig_tot);
+                            } elseif (DateTime::createFromFormat('m/d/Y', $optie_geldig_tot)) {
+                                $option_date_parsed = DateTime::createFromFormat('m/d/Y', $optie_geldig_tot);
+                            }
+
+                            if ($option_date_parsed) {
+                                $today = new DateTime();
+                                $interval = $today->diff($option_date_parsed);
+                                $days_diff = (int)$interval->format('%r%a'); // %r voor teken, %a voor dagen zonder teken
+
+                                if ($days_diff > 0) {
+                                    $option_info_badge = ' (Nog ' . $days_diff . ' dag' . ($days_diff > 1 ? 'en' : '') . ')';
+                                } elseif ($days_diff === 0) {
+                                    $option_info_badge = ' (Laatste dag)';
+                                } else {
+                                    $days_elapsed = abs($days_diff);
+                                    $option_info_badge = ' (' . $days_elapsed . ' dag' . ($days_elapsed > 1 ? 'en' : '') . ' verlopen)';
+                                }
+                            }
+                        }
+                    } else {
+                        // Fallback voor andere onbekende maatwerk statussen (standaard oranje)
+                        $badge_class .= ' status-maatwerk-orange';
+                    }
+                    // Ordernummer en eventuele optie info voor de badge
+                    $order_number_display = esc_html($item['sequential_order_number']) . $option_info_badge;
+                }
+
+                // Tijdopmaaklogica (Vroegste Start - Laatste Eind)
+                $all_times = [];
+                if (!empty($item['tijd']) && $item['tijd'] !== '🕒') {
+                    $parts = explode(' - ', $item['tijd']);
+                    foreach ($parts as $part) {
+                        $part = trim($part);
+                        if (strpos($part, ':') !== false) {
+                            $all_times[] = $part;
+                        }
+                    }
+                }
+                if (!empty($item['eindtijd'])) {
+                    $parts = explode(' - ', $item['eindtijd']);
+                    foreach ($parts as $part) {
+                        $part = trim($part);
+                        if (strpos($part, ':') !== false) {
+                            $all_times[] = $part;
+                        }
+                    }
+                }
+                $all_times = array_unique($all_times);
+                usort($all_times, function($a, $b) {
+                    return strtotime($a) - strtotime($b);
+                });
+
+                $display_time_range = '';
+                if (!empty($all_times)) {
+                    $earliest_time = $all_times[0];
+                    $latest_time = end($all_times);
+                    $display_time_range = esc_html($earliest_time) . ' - ' . esc_html($latest_time);
+                } else if ($item['tijd'] === '🕒') {
+                    $display_time_range = '🕒';
+                }
+
+                // Belangrijk: Voeg data-order-type en data-has-note toe aan het item div
+$output .= '<div class="wc-weekagenda-item-google ' . esc_attr($item_type_class) . '" '
+         . 'data-order-id="'     . esc_attr($item['order_id'])     . '" '
+         . 'data-order-type="'   . esc_attr($item['type'])         . '" '
+         . 'data-post-status="'  . esc_attr($item['post_status'])  . '"'
+         . (!empty($item['has_note']) ? ' data-has-note="true"' : '')
+         . '>';
+
+                // Ordernummer in badge bovenaan (gebruik sequential_order_number en optie info)
+                $output .= '<div class="'.esc_attr($badge_class).'">' . $order_number_display . '</div>';
+
+                // Bedrijfsnaam weergeven indien beschikbaar (zowel voor WC als Maatwerk)
+                if (!empty($item['billing_company'])) {
+                    $output .= '<span class="wc-company-name-display">' . esc_html($item['billing_company']) . '</span>';
+                }
+
+// Tijd met klok-emoji
+$output .= '<span class="wc-time-display">🕒 ' . $display_time_range . '</span>';
+
+// Locatie: alleen straat+huisnummer, of fallback 'Niet opgegeven'
+if ( ! empty( $item['locatie'] ) ) {
+    $parts   = explode( ', ', $item['locatie'] );
+    $address = reset( $parts );
+} else {
+    $address = 'Niet opgegeven';
+}
+$output .= '<span class="wc-info-text"> 📍 ' . esc_html( $address ) . '</span>';
+
+
+// Personen op eigen regel - verbergt als de waarde 0 of leeg is
+if (!empty($item['personen']) && (int)$item['personen'] > 0) {
+    $output .= '<br><span class="wc-info-text">👥 <b>' . esc_html($item['personen']) . '</b> Personen</span>';
+}
+
+// Medewerkers op eigen regel, alleen bij >0, met enkelvoud/meervoud
+if (! empty( $item['aantal_medewerkers'] ) && intval( $item['aantal_medewerkers'] ) > 0 ) {
+    $count = intval( $item['aantal_medewerkers'] );
+    $label = $count === 1 ? 'Medewerker' : 'Medewerkers';
+    $output .= '<br><span class="wc-info-text">👷 <b>' . esc_html( $count ) . '</b> ' . esc_html( $label ) . '</span>';
+}
+
+// Belangrijke Opmerking (alleen bij maatwerk en niet-leeg)
+if ( $item['type'] === 'maatwerk' ) {
+    $output .= '<br><div class="wc-info-text"><strong>✏️ </strong>'
+             . esc_html( $item['important_opmerking'] )
+             . '</div>';
+}
+				                $output .= '<div class="wc-pakbon-button" style="margin:8px 0;">'
+                         . do_shortcode(
+                             '[wcpdf_download_pdf document_type="packing-slip" '
+                           . 'order_id="' . esc_attr( $item['order_id'] ) . '" '
+                           . 'link_text="📄 keuken order bekijken"]'
+                         )
+                         . '</div>';
+                $output .= '</div>';
+            }
+        } else {
+            $output .= '<div class="wc-weekagenda-leeg-google">Geen bestellingen vandaag! </div>';
+        }
+
+        // Voeg de "Bekijk Dagoverzicht Producten" knop toe als er WooCommerce orders zijn voor deze dag
+        if ($has_woocommerce_orders) {
+            $output .= '<br><button class="wc-daily-summary-button" data-day-date="' . esc_attr($day_key) . '">Dagtotaal</button>';
+        }
+ 		else {
+            $output .= '<br><button class="wc-daily-summary-button" data-day-date="' . esc_attr($day_key) . '">Dagtotaal</button>';
+        }
+
+        $output .= '</div>';
+    }
+    return $output;
 }
 
 /**
- * Callback voor de backendpagina "Orders Overzicht"
+ * AJAX handler om de agenda-inhoud dynamisch te laden.
  */
-function render_week_overzicht_admin_page() {
-    echo '<div class="wrap">';
-    display_orders_current_week_lite_backend();
-    echo '</div>';
+add_action('wp_ajax_wc_orders_week_agenda_ajax', 'wc_orders_week_agenda_ajax_handler');
+add_action('wp_ajax_nopriv_wc_orders_week_agenda_ajax', 'wc_orders_week_agenda_ajax_handler');
+
+function wc_orders_week_agenda_ajax_handler() {
+    error_log('wc_orders_week_agenda_ajax_handler function called.'); // Debug log
+    $start_date = isset($_POST['start_date']) ? sanitize_text_field($_POST['start_date']) : date('Y/m/d', strtotime('monday this week'));
+    $agenda_visibility_setting = isset($_POST['agenda_visibility_setting']) ? sanitize_text_field($_POST['agenda_visibility_setting']) : 'alle_werknemers'; // Haal zichtbaarheidsinstelling op van AJAX
+
+    $current_week_start_timestamp = strtotime($start_date);
+    $week_start = strtotime('monday this week', $current_week_start_timestamp);
+    $week_end = strtotime('sunday this week 23:59:59', $current_week_start_timestamp);
+
+    $agenda = array();
+
+    // --- 1. Query WooCommerce bestellingen ---
+    $wc_post_statuses = array_keys(wc_get_order_statuses());
+
+    $args_wc = array(
+        'post_type'      => 'shop_order',
+        'posts_per_page' => -1,
+        'post_status'    => $wc_post_statuses,
+        'meta_query'     => array(
+            array(
+                'key'     => 'pi_system_delivery_date',
+                'value'   => array(date('Y/m/d', $week_start), date('Y/m/d', $week_end)),
+                'compare' => 'BETWEEN',
+                'type'    => 'DATE'
+            )
+        )
+    );
+
+    $wc_orders = get_posts($args_wc);
+    foreach ($wc_orders as $order_post) {
+        $order_id = $order_post->ID;
+        $order = wc_get_order($order_id);
+        if (!$order) continue;
+        $delivery_date = get_post_meta($order_id, 'pi_system_delivery_date', true);
+        $delivery_time = get_post_meta($order_id, 'pi_delivery_time', true);
+        $eindtijd      = get_post_meta($order_id, 'order_eindtijd', true);
+        $locatie       = get_post_meta($order_id, 'order_location', true);
+        $personen      = get_post_meta($order_id, 'order_personen', true);
+        $order_reference = get_post_meta($order_id, 'order_reference', true);
+        $billing_company = $order->get_billing_company();
+        $customer_note = $order->get_customer_note(); // Haal klantnotitie op voor indicator
+        if (!$delivery_date) continue;
+        if (!isset($agenda[$delivery_date])) $agenda[$delivery_date] = array();
+        $agenda[$delivery_date][] = array(
+            'type'                      => 'woocommerce',
+            'order_id'                  => $order_id,
+            'sequential_order_number'   => $order->get_order_number(),
+            'tijd'                      => $delivery_time ? $delivery_time : '🕒',
+            'eindtijd'                  => $eindtijd ? $eindtijd : '',
+            'locatie'                   => $locatie,
+            'personen'                  => $personen,
+            'order_reference'           => $order_reference,
+            'post_status'               => $order_post->post_status,
+            'billing_company'           => $billing_company,
+            'has_note'                  => !empty($customer_note) // Voeg 'has_note' vlag toe
+        );
+    }
+    wp_reset_postdata(); // Reset postdata na WooCommerce query in AJAX
+
+    // --- 2. Query Maatwerk bestellingen ---
+    // Alle statussen voor maatwerk, inclusief 'geaccepteerd' en 'afgewezen'
+    $maatwerk_post_statuses = array('nieuw', 'in-optie', 'in_behandeling', 'bevestigd', 'afgerond', 'publish', 'geannuleerd', 'geaccepteerd', 'afgewezen');
+
+    $args_maatwerk = array(
+        'post_type'      => 'maatwerk_bestelling',
+        'posts_per_page' => -1,
+        'post_status'    => $maatwerk_post_statuses,
+        'meta_query'     => array(
+            'relation' => 'AND',
+            array(
+                'key'     => 'datum',
+                'value'   => array(date('Y-m-d', $week_start), date('Y-m-d', $week_end)),
+                'compare' => 'BETWEEN',
+                'type'    => 'DATE'
+            )
+        )
+    );
+
+    $maatwerk_orders = get_posts($args_maatwerk);
+    error_log('DEBUG: Found ' . count($maatwerk_orders) . ' maatwerk orders (AJAX) for week ' . date('Y/m/d', $week_start) . ' - ' . date('Y/m/d', $week_end)); // Nieuwe debug log
+
+    foreach ($maatwerk_orders as $m_order_post) {
+        $m_order_id = $m_order_post->ID;
+        $order_nummer            = get_post_meta($m_order_id, 'order_nummer', true);
+        $maatwerk_voornaam       = get_post_meta($m_order_id, 'maatwerk_voornaam', true);
+        $maatwerk_achternaam     = get_post_meta($m_order_id, 'maatwerk_achternaam', true);
+        $maatwerk_email          = get_post_meta($m_order_id, 'maatwerk_email', true);
+        $maatwerk_telefoonnummer = get_post_meta($m_order_id, 'maatwerk_telefoonnummer', true);
+        $bedrijfsnaam            = get_post_meta($m_order_id, 'bedrijfsnaam', true);
+        $straat_huisnummer       = get_post_meta($m_order_id, 'straat_huisnummer', true);
+        $postcode                = get_post_meta($m_order_id, 'postcode', true);
+        $plaats                  = get_post_meta($m_order_id, 'plaats', true);
+        $referentie              = get_post_meta($m_order_id, 'referentie', true);
+        $datum                   = get_post_meta($m_order_id, 'datum', true);
+        $start_tijd              = get_post_meta($m_order_id, 'start_tijd', true);
+        $eind_tijd               = get_post_meta($m_order_id, 'eind_tijd', true);
+        $aantal_medewerkers      = get_post_meta($m_order_id, 'aantal_medewerkers', true);
+        $aantal_personen         = get_post_meta($m_order_id, 'aantal_personen', true);
+		$important_opmerking = get_post_meta($m_order_id, 'important_opmerking', true);
+        $opmerkingen             = get_post_meta($m_order_id, '_maatwerk_bestelling_opmerkingen', true); // Aangepast naar de correcte meta key
+        $order_status_maatwerk   = get_post_meta($m_order_id, 'order_status', true); // Haal de daadwerkelijke maatwerk order status op
+        $optie_geldig_tot        = get_post_meta($m_order_id, 'optie_geldig_tot', true); // Haal de optie geldig tot datum op
+        error_log('DEBUG: Maatwerk Order ID: ' . $m_order_id . ' Status: ' . $order_status_maatwerk . ' Datum: ' . $datum . ' Optie geldig tot: ' . $optie_geldig_tot); // Log status en datum
+
+        $delivery_date_maatwerk = $datum;
+        $delivery_time_maatwerk = $start_tijd;
+        $eindtijd_maatwerk      = $eind_tijd;
+        $locatie_maatwerk       = (!empty($straat_huisnummer) ? $straat_huisnummer . ', ' : '') . $plaats;
+        $personen_maatwerk      = !empty($aantal_personen) ? $aantal_personen : (!empty($aantal_medewerkers) ? $aantal_medewerkers : '');
+        $order_reference_maatwerk = $referentie;
+        $billing_company_maatwerk = $bedrijfsnaam;
+        $display_post_status_maatwerk = !empty($order_status_maatwerk) ? $order_status_maatwerk : 'mw-completed';
+
+        // Robuuste datum parsing voor de agenda array key
+        $parsed_date = DateTime::createFromFormat('Y-m-d', $datum);
+        if (!$parsed_date) {
+            $parsed_date = DateTime::createFromFormat('d-m-Y', $datum);
+        }
+        if (!$parsed_date) {
+            $parsed_date = DateTime::createFromFormat('m/d/Y', $datum);
+        }
+        if ($parsed_date) {
+            $delivery_date_maatwerk = $parsed_date->format('Y/m/d');
+        } else {
+            error_log('DEBUG: Kon maatwerk datum niet parsen (AJAX): ' . $datum . ' voor order ID: ' . $m_order_id);
+            continue;
+        }
+
+        if (!$delivery_date_maatwerk) continue;
+        if (!isset($agenda[$delivery_date_maatwerk])) $agenda[$delivery_date_maatwerk] = array();
+        $agenda[$delivery_date_maatwerk][] = array(
+            'type'                      => 'maatwerk',
+            'order_id'                  => $m_order_id,
+            'sequential_order_number'   => !empty($order_nummer) ? $order_nummer : 'MW-' . $m_order_id,
+            'tijd'                      => $delivery_time_maatwerk ? $delivery_time_maatwerk : '🕒',
+            'eindtijd'                  => $eindtijd_maatwerk ? $eindtijd_maatwerk : '',
+            'locatie'                   => $locatie_maatwerk,
+            'personen'                  => $personen_maatwerk,
+            'order_reference'           => $order_reference_maatwerk,
+            'post_status'               => $display_post_status_maatwerk,
+            'billing_company'           => $billing_company_maatwerk,
+            'maatwerk_voornaam'         => $maatwerk_voornaam,
+            'maatwerk_achternaam'       => $maatwerk_achternaam,
+            'maatwerk_email'            => $maatwerk_email,
+            'maatwerk_telefoonnummer'   => $maatwerk_telefoonnummer,
+            'postcode'                  => $postcode,
+            'opmerkingen'               => $opmerkingen,
+            'aantal_medewerkers'        => $aantal_medewerkers,
+            'aantal_personen_raw'       => $aantal_personen,
+            'optie_geldig_tot'          => $optie_geldig_tot, // Voeg optie_geldig_tot toe aan de agenda array
+            'has_note'                  => !empty($opmerkingen) // Voeg 'has_note' vlag toe
+        );
+    }
+    wp_reset_postdata(); // Reset postdata na Maatwerk query in AJAX
+
+
+    echo generate_agenda_content($agenda, $week_start);
+    wp_die();
+}
+
+/**
+ * AJAX handler om gedetailleerde bestelinformatie op te halen voor de modal.
+ */
+add_action('wp_ajax_wc_get_order_details_ajax', 'wc_get_order_details_ajax_handler');
+add_action('wp_ajax_nopriv_wc_get_order_details_ajax', 'wc_get_order_details_ajax_handler');
+
+function wc_get_order_details_ajax_handler() {
+    error_log('wc_get_order_details_ajax_handler function called for order ID: ' . (isset($_POST['order_id']) ? $_POST['order_id'] : 'N/A') . ' and type: ' . (isset($_POST['order_type']) ? $_POST['order_type'] : 'N/A')); // Debug log
+
+    $order_id = isset($_POST['order_id']) ? intval($_POST['order_id']) : 0;
+    $order_type = isset($_POST['order_type']) ? sanitize_text_field($_POST['order_type']) : ''; // Haal het type op
+    $agenda_visibility_setting = isset($_POST['agenda_visibility_setting']) ? sanitize_text_field($_POST['agenda_visibility_setting']) : 'alle_werknemers'; // Haal zichtbaarheidsinstelling op van AJAX
+
+    if ($order_id <= 0) {
+        wp_send_json_error('Ongeldig order ID.');
+    }
+
+    $output = '';
+
+    if ($order_type === 'woocommerce') {
+        $order = wc_get_order($order_id);
+
+        if (!$order) {
+            wp_send_json_error('WooCommerce bestelling niet gevonden.');
+        }
+
+        // Top Info: Referentie (BQXXX)
+        $output .= '<div class="wc-modal-top-info">';
+        $order_reference = esc_html(get_post_meta($order_id, 'order_reference', true));
+        $order_number = esc_html($order->get_order_number()); // Haal het ordernummer op
+
+        if (!empty($order_reference)) {
+            $output .= '' . $order_reference . ' (' . $order_number . ')<br>';
+        } else {
+            $output .= '(' . $order_number . ')<br>';
+        }
+        $output .= '</div>';
+
+        // Klantgegevens sectie
+        $output .= '<div class="wc-modal-detail-section">';
+        $output .= '<p>' . esc_html($order->get_billing_first_name()) . ' ' . esc_html($order->get_billing_last_name()) . '</p>';
+        if (!empty($order->get_billing_company())) {
+            $output .= '<p>' . esc_html($order->get_billing_company()) . '</p>';
+        }
+        $output .= '<p><a href="mailto:' . esc_attr($order->get_billing_email()) . '">' . esc_html($order->get_billing_email()) . '</a></p>';
+        $output .= '<p><a href="tel:' . esc_attr($order->get_billing_phone()) . '">' . esc_html($order->get_billing_phone()) . '</a></p>';
+        $output .= '</div>';
+
+        // Leveringsgegevens sectie (met emojis)
+        $output .= '<div class="wc-modal-detail-section">';
+        $output .= '<h4>Leveringsgegevens</h4>';
+
+        // Tijd (boven locatie, met emoji)
+        $delivery_time = get_post_meta($order_id, 'pi_delivery_time', true);
+        $eindtijd      = get_post_meta($order_id, 'order_eindtijd', true);
+
+        $time_display = '';
+        if (!empty($delivery_time) && $delivery_time !== '🕒') {
+            $time_display .= esc_html($delivery_time);
+        }
+        if (!empty($eindtijd)) {
+            if (!empty($time_display)) {
+                $time_display .= ' - ';
+            }
+            $time_display .= esc_html($eindtijd);
+        } else if (empty($time_display) && $delivery_time === '🕒') {
+            $time_display = '🕒';
+        }
+
+        if (!empty($time_display)) {
+            $output .= '<p>🕒 ' . $time_display . '</p>';
+        }
+
+        $output .= '<p>📍 ' . esc_html(get_post_meta($order_id, 'order_location', true)) . '</p>';
+        $output .= '<p>👥 ' . esc_html(get_post_meta($order_id, 'order_personen', true)) . ' Personen</p>';
+        $output .= '</div>';
+
+        // Notities sectie
+        $customer_note = $order->get_customer_note();
+        if (!empty($customer_note)) {
+            $output .= '<div class="wc-modal-detail-section">';
+            $output .= '<h4>Notitie</h4>';
+            $output .= '<p class="no-title">' . nl2br(esc_html($customer_note)) . '</p>';
+            $output .= '</div>';
+        }
+
+        // Pakbon weergave is verwijderd zoals gevraagd.
+
+        // Bestelde producten sectie (met nieuwe styling)
+        $output .= '<div class="wc-modal-detail-section ordered-products">';
+        $output .= '<h4>Bestelde producten</h4>';
+        $output .= '<ul>';
+        foreach ($order->get_items() as $item_id => $item) {
+            $product_name = $item->get_name();
+            $quantity = $item->get_quantity();
+            $output .= '<li><div class="product-name-qty"><span>' . esc_html($product_name) . '</span> <span>x ' . esc_html($quantity) . '</span></div>';
+
+            // Haal en toon product meta data
+            $item_meta_data = $item->get_meta_data();
+            if ($item_meta_data) {
+                $output .= '<ul>';
+                foreach ($item_meta_data as $meta) {
+                    if (strpos($meta->key, '_') !== 0) { // Sluit verborgen meta keys uit
+                        $output .= '<li><strong>' . esc_html(ucfirst(str_replace('_', ' ', $meta->key))) . ':</strong> ' . esc_html($meta->value) . '</li>';
+                    }
+                }
+                $output .= '</ul>';
+            }
+            $output .= '</li>'; // Belangrijke fix: sluit de <li> tag
+        }
+        $output .= '</ul>';
+        $output .= '</div>';
+
+    } elseif ($order_type === 'maatwerk') {
+        // Haal maatwerk order post op
+        $m_order_post = get_post($order_id);
+
+        if (!$m_order_post || $m_order_post->post_type !== 'maatwerk_bestelling') {
+            wp_send_json_error('Maatwerk bestelling niet gevonden.');
+        }
+
+        // Haal alle maatwerk meta-data op
+        $order_nummer            = get_post_meta($order_id, 'order_nummer', true);
+        $maatwerk_voornaam       = get_post_meta($order_id, 'maatwerk_voornaam', true);
+        $maatwerk_achternaam     = get_post_meta($order_id, 'maatwerk_achternaam', true);
+        $maatwerk_email          = get_post_meta($order_id, 'maatwerk_email', true);
+        $maatwerk_telefoonnummer = get_post_meta($order_id, 'maatwerk_telefoonnummer', true);
+        $bedrijfsnaam            = get_post_meta($order_id, 'bedrijfsnaam', true);
+        $straat_huisnummer       = get_post_meta($order_id, 'straat_huisnummer', true);
+        $postcode                = get_post_meta($order_id, 'postcode', true);
+        $plaats                  = get_post_meta($order_id, 'plaats', true);
+        $referentie              = get_post_meta($order_id, 'referentie', true);
+        $datum                   = get_post_meta($order_id, 'datum', true);
+        $start_tijd              = get_post_meta($order_id, 'start_tijd', true);
+        $eind_tijd               = get_post_meta($order_id, 'eind_tijd', true);
+        $aantal_medewerkers      = get_post_meta($order_id, 'aantal_medewerkers', true);
+        $aantal_personen         = get_post_meta($order_id, 'aantal_personen', true);
+        // Gebruik de correcte meta key voor opmerkingen
+        $opmerkingen             = get_post_meta($order_id, '_maatwerk_bestelling_opmerkingen', true); // Aangepast naar de correcte meta key
+        $pdf_uploads             = get_post_meta($order_id, '_pdf_attachments', true); // Haal PDF uploads op
+        $order_status_maatwerk   = get_post_meta($order_id, 'order_status', true); // Haal de daadwerkelijke maatwerk order status op
+        $optie_geldig_tot        = get_post_meta($order_id, 'optie_geldig_tot', true); // Haal de optie geldig tot datum op
+
+        // Top Info: Referentie (Maatwerk)
+        $output .= '<div class="wc-modal-top-info">';
+        $maatwerk_display_order_number = !empty($order_nummer) ? $order_nummer : 'MW-' . $order_id;
+        if (!empty($referentie)) {
+            $output .= ' ' . esc_html($referentie) . ' (' . esc_html($maatwerk_display_order_number) . ')<br>';
+        } else {
+            $output .= "Maatwerk Bestelling: " . esc_html($maatwerk_display_order_number) . "<br>";
+        }
+
+        // Toon "In optie tot" ook in de modal
+        if ($order_status_maatwerk === 'in-optie' && !empty($optie_geldig_tot)) {
+            $option_date_parsed = null;
+            if (DateTime::createFromFormat('Y-m-d', $optie_geldig_tot)) {
+                $option_date_parsed = DateTime::createFromFormat('Y-m-d', $optie_geldig_tot);
+            } elseif (DateTime::createFromFormat('d-m-Y', $optie_geldig_tot)) {
+                $option_date_parsed = DateTime::createFromFormat('d-m-Y', $optie_geldig_tot);
+            } elseif (DateTime::createFromFormat('m/d/Y', $optie_geldig_tot)) {
+                $option_date_parsed = DateTime::createFromFormat('m/d/Y', $optie_geldig_tot);
+            }
+
+            if ($option_date_parsed) {
+                $today = new DateTime();
+                $interval = $today->diff($option_date_parsed);
+                $days_diff = (int)$interval->format('%r%a');
+
+                $option_date_formatted = $option_date_parsed->format('j F Y');
+                $output .= '<span>In optie t/m: ' . $option_date_formatted;
+                if ($days_diff > 0) {
+                    $output .= ' (Nog ' . $days_diff . ' dag' . ($days_diff > 1 ? 'en' : '') . ')';
+                } elseif ($days_diff === 0) {
+                    $output .= ' (Laatste dag!)';
+                } else {
+                    $days_elapsed = abs($days_diff);
+                    $output .= ' (' . $days_elapsed . ' dag' . ($days_elapsed > 1 ? 'en' : '') . ' verlopen)';
+                }
+                $output .= '</span>';
+            }
+        }
+        $output .= '</div>'; // Sluit wc-modal-top-info
+
+        // Bewerkknop voor Maatwerk bestellingen (alleen voor admins)
+        // Haal de huidige gebruiker op om rollen te controleren
+        $current_user = wp_get_current_user();
+        $user_roles = (array) $current_user->roles;
+        if (in_array('administrator', $user_roles)) { // Gewijzigd naar expliciete 'administrator' rolcontrole
+            $edit_url = 'https://banquetingportaal.nl/alg/maatwerk/?maatwerk_edit=' . $order_id;
+            $output .= '<div style="text-align: right; margin-bottom: 15px;">';
+            // Gebruik window.open() om een nieuw venster gecentreerd te openen
+            $output .= '<a href="#" onclick="
+                var width = 800;
+                var height = 800; // Aangepast naar 800px hoogte
+                var left = (screen.width / 2) - (width / 2);
+                var top = (screen.height / 2) - (height / 2);
+                window.open(\'' . esc_url($edit_url) . '\', \'_blank\', \'width=\' + width + \',height=\' + height + \',top=\' + top + \',left=\' + left + \',resizable=yes,scrollbars=yes\');
+                return false;
+            " class="wc-edit-button" style="background-color: #4CAF50; color: #fff; padding: 8px 12px; border-radius: 5px; text-decoration: none; font-weight: bold;">Bewerken</a>';
+            $output .= '</div>';
+        }
+
+        // Klantgegevens
+        $output .= '<div class="wc-modal-detail-section">';
+        $output .= '<h4>Klantgegevens</h4>'; // Voeg titel toe voor consistentie
+        $output .= '<p>' . esc_html($maatwerk_voornaam) . ' ' . esc_html($maatwerk_achternaam) . '</p>';
+        if (!empty($bedrijfsnaam)) {
+            $output .= '<p>' . esc_html($bedrijfsnaam) . '</p>';
+        }
+        $output .= '<p><a href="mailto:' . esc_attr($maatwerk_email) . '">' . esc_html($maatwerk_email) . '</a></p>';
+        $output .= '<p><a href="tel:' . esc_attr($maatwerk_telefoonnummer) . '">' . esc_html($maatwerk_telefoonnummer) . '</a></p>';
+        $output .= '</div>';
+
+        // Leveringsgegevens
+        $output .= '<div class="wc-modal-detail-section">';
+        $output .= '<h4>Leveringsgegevens</h4>';
+
+        $time_display_maatwerk = '';
+        if (!empty($start_tijd)) {
+            $time_display_maatwerk .= esc_html($start_tijd);
+        }
+        if (!empty($eind_tijd)) {
+            if (!empty($time_display_maatwerk)) {
+                $time_display_maatwerk .= ' - ';
+            }
+            $time_display_maatwerk .= esc_html($eind_tijd);
+        } else if (empty($time_display_maatwerk)) { // Fallback als er geen specifieke tijd is
+            $time_display_maatwerk = '🕒';
+        }
+
+        if (!empty($time_display_maatwerk)) {
+            $output .= '<p>🕒 ' . $time_display_maatwerk . '</p>';
+        }
+
+        $full_address = '';
+        if (!empty($straat_huisnummer)) {
+            $full_address .= esc_html($straat_huisnummer);
+        }
+        if (!empty($postcode)) {
+            if (!empty($full_address)) $full_address .= ', ';
+            $full_address .= esc_html($postcode);
+        }
+        if (!empty($plaats)) {
+            if (!empty($full_address)) $full_address .= ', ';
+            $full_address .= esc_html($plaats);
+        }
+        if (!empty($full_address)) {
+            $output .= '<p>📍 ' . $full_address . '</p>';
+        } else {
+            $output .= '<p>📍 Locatie onbekend</p>';
+        }
+
+		// Personen/medewerkers
+		if (!empty($aantal_personen)) {
+  		  $output .= '<p>👥 <b>' . esc_html($aantal_personen) . '</b> Personen</p>';
+		}
+
+		// Medewerkers: alleen tonen bij >0, met enkelvoud/meervoud
+		if (!empty($aantal_medewerkers)) {
+   		 $count = intval($aantal_medewerkers);
+    		$label = $count === 1 ? 'Medewerker' : 'Medewerkers';
+    		$output .= '<p>👷 <b>' . esc_html($count) . '</b> ' . esc_html($label) . '</p>';
+		}
+
+        $important_opmerking = get_post_meta($order_id, 'important_opmerking', true);
+        if (!empty($important_opmerking)) {
+            $output .= '<p><strong>✏️</strong> ' . esc_html($important_opmerking) . '</p>';
+        }
+
+
+        // *** Einde toevoeging ***
+		
+        $output .= '</div>';
+
+        // Opmerkingen
+        if (!empty($opmerkingen)) {
+            $output .= '<div class="wc-modal-detail-section">';
+            $output .= '<h4>Opmerkingen</h4>';
+            $output .= '<p class="no-title">' . nl2br(esc_html($opmerkingen)) . '</p>';
+            $output .= '</div>';
+        }
+
+        // PDF links (als je die meta data hebt) - Toon alleen als agenda_visibility_setting 'alle_werknemers' is OF als huidige gebruiker admin is
+        $current_user_is_admin = current_user_can('manage_options');
+
+        if (!empty($pdf_uploads) && is_array($pdf_uploads)) {
+            if ($agenda_visibility_setting === 'alle_werknemers' || $current_user_is_admin) {
+                $output .= '<div class="wc-modal-detail-section ordered-products">'; // Hergebruik ordered-products voor styling
+                $output .= '<h4>Bijgevoegde PDF\'s</h4>';
+                $output .= '<ul>';
+                foreach ($pdf_uploads as $pdf_file) {
+                    // Ervan uitgaande dat elk item in $pdf_uploads een array is met 'url'
+                    if (is_array($pdf_file) && isset($pdf_file['url'])) {
+                        $filename = isset($pdf_file['filename']) ? esc_html($pdf_file['filename']) : 'Download PDF';
+                        $output .= '<li><a href="' . esc_url($pdf_file['url']) . '" target="_blank">' . $filename . '</a></li>';
+                    } else {
+                        // Fallback voor als het alleen een URL is (bijv. een simpele string)
+                        $output .= '<li><a href="' . esc_url($pdf_file) . '" target="_blank">Download PDF</a></li>';
+                    }
+                }
+                $output .= '</ul>';
+                $output .= '</div>';
+            } else {
+                // Als zichtbaarheid 'interne_medewerkers' is en gebruiker geen admin, toon PDF sectie niet
+                error_log('DEBUG: PDF section hidden for maatwerk order ' . $order_id . ' due to visibility setting and non-admin user.');
+            }
+        }
+
+    } else {
+        wp_send_json_error('Onbekend order type.');
+    }
+
+    wp_send_json_success($output); // Gebruik wp_send_json_success voor consistente AJAX-respons
+}
+
+/**
+ * AJAX handler om een dagelijks productoverzicht te genereren.
+ */
+add_action('wp_ajax_wc_get_daily_product_summary_ajax', 'wc_get_daily_product_summary_handler');
+add_action('wp_ajax_nopriv_wc_get_daily_product_summary_ajax', 'wc_get_daily_product_summary_handler');
+
+function wc_get_daily_product_summary_handler() {
+    error_log('wc_get_daily_product_summary_handler function called for day: ' . (isset($_POST['day_date']) ? $_POST['day_date'] : 'N/A'));
+
+    $day_date_str = isset($_POST['day_date']) ? sanitize_text_field($_POST['day_date']) : '';
+
+    if (empty($day_date_str)) {
+        wp_send_json_error('Geen geldige datum opgegeven voor dagoverzicht.');
+    }
+
+    // Zorg ervoor dat de datum in het juiste formaat is voor de meta_query
+    $day_date_query_format = date('Y-m-d', strtotime($day_date_str));
+    $day_date_display_format = date_i18n('l j F Y', strtotime($day_date_str));
+
+    $product_summary_by_category = []; // Nieuwe structuur: category => [product => quantity]
+
+    $args_wc = array(
+        'post_type'      => 'shop_order',
+        'posts_per_page' => -1,
+        // Sluit 'wc-cancelled' uit van de statussen voor het dagoverzicht
+        'post_status'    => array_diff(array_keys(wc_get_order_statuses()), ['wc-cancelled']),
+        'meta_query'     => array(
+            array(
+                'key'     => 'pi_system_delivery_date',
+                'value'   => $day_date_query_format,
+                'compare' => '=',
+                'type'    => 'DATE'
+            )
+        )
+    );
+
+    $wc_orders = get_posts($args_wc);
+
+    foreach ($wc_orders as $order_post) {
+        $order = wc_get_order($order_post->ID);
+        // Verwerk alleen als de order niet geannuleerd is
+        if (!$order || $order->get_status() === 'cancelled') {
+            continue;
+        }
+
+        foreach ($order->get_items() as $item) {
+            $product_id = $item->get_product_id();
+            $product = wc_get_product($product_id);
+            $product_name = $item->get_name();
+            $quantity = $item->get_quantity();
+
+            $category_name = 'Overig'; // Standaard categorie
+            if (stripos($product_name, 'Lunch') !== false) {
+                $category_name = '<u>Lunch opties</u>'; // Nieuwe specifieke categorie voor lunch
+            } else if ($product) {
+                $categories = $product->get_category_ids(); // Krijg een array van categorie ID's
+                if (!empty($categories)) {
+                    $first_category_id = $categories[0];
+                    $term = get_term($first_category_id, 'product_cat');
+                    if ($term && !is_wp_error($term)) {
+                        $category_name = $term->name;
+                    }
+                }
+            }
+
+            // Sla op in de geneste array
+            if (!isset($product_summary_by_category[$category_name])) {
+                $product_summary_by_category[$category_name] = [];
+            }
+            if (isset($product_summary_by_category[$category_name][$product_name])) {
+                $product_summary_by_category[$category_name][$product_name] += $quantity;
+            } else {
+                $product_summary_by_category[$category_name][$product_name] = $quantity;
+            }
+        }
+    }
+    wp_reset_postdata(); // Reset postdata na WooCommerce query
+
+    $output = '<div class="wc-modal-top-info">';
+    $output .= '' . esc_html($day_date_display_format);
+    $output .= '</div>';
+
+    if (!empty($product_summary_by_category)) {
+        $output .= '<div class="wc-modal-detail-section ordered-products">';
+        $output .= '<ul>';
+
+        // Scheid 'Lunch opties' producten
+        $lunch_products_display = [];
+        if (isset($product_summary_by_category['Lunch opties'])) {
+            $lunch_products_raw = $product_summary_by_category['Lunch opties'];
+            ksort($lunch_products_raw); // Sorteer producten binnen Lunch alfabetisch
+            foreach ($lunch_products_raw as $product_name => $total_quantity) {
+                $lunch_products_display[] = ['name' => esc_html($product_name), 'qty' => esc_html($total_quantity)];
+            }
+            unset($product_summary_by_category['Lunch opties']);
+        }
+
+        // Sorteer alle andere categorieën alfabetisch op categorienaam
+        ksort($product_summary_by_category);
+
+        // Bereid en sorteer andere producten voor weergave
+        $other_products_display = [];
+        foreach ($product_summary_by_category as $category_name => $products_in_category) {
+            ksort($products_in_category); // Sorteer producten binnen elke andere categorie alfabetisch
+            foreach ($products_in_category as $product_name => $total_quantity) {
+                $other_products_display[] = ['name' => esc_html($product_name), 'qty' => esc_html($total_quantity)];
+            }
+        }
+
+        // Toon eerst andere producten
+        foreach ($other_products_display as $product_data) {
+            $output .= '<li><div class="product-name-qty"><span>' . $product_data['name'] . '</span> <span>x ' . $product_data['qty'] . '</span></div></li>';
+        }
+
+        // Toon daarna de "Lunch opties" producten, voorafgegaan door het label als er producten zijn
+        if (!empty($lunch_products_display)) {
+            $output .= '<li><div class="product-name-qty" style="margin-top: 15px;"><strong>Lunch opties</strong></div></li>'; // Categorielabel voor Lunch
+            foreach ($lunch_products_display as $product_data) {
+                $output .= '<li><div class="product-name-qty"><span>' . $product_data['name'] . '</span> <span>x ' . $product_data['qty'] . '</span></div></li>';
+            }
+        }
+
+        $output .= '</ul>';
+        $output .= '</div>';
+    } else {
+        $output .= '<div class="wc-modal-detail-section">';
+        $output .= '<p style="text-align: center;">Geen banqueting orders vandaag</p>';
+        $output .= '</div>';
+    }
+
+    wp_send_json_success($output);
 }
