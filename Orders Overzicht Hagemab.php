@@ -1479,6 +1479,7 @@ function wc_orders_week_agenda_ajax_handler() {
             'maatwerk_telefoonnummer'   => $maatwerk_telefoonnummer,
             'postcode'                  => $postcode,
             'opmerkingen'               => $opmerkingen,
+            'important_opmerking'       => $important_opmerking,
             'aantal_medewerkers'        => $aantal_medewerkers,
             'aantal_personen_raw'       => $aantal_personen,
             'optie_geldig_tot'          => $optie_geldig_tot, // Voeg optie_geldig_tot toe aan de agenda array
