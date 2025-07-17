@@ -1107,9 +1107,9 @@ document.addEventListener('DOMContentLoaded', function() {
 </script>
 
 
-    <?php
+<?php
     return ob_get_clean();
-}
+
 
 /*
 |--------------------------------------------------------------------------

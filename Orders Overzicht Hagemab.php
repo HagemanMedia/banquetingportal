@@ -932,13 +932,36 @@ function initAgendaNavigation() {
             if (agendaContainer) {
                 agendaContainer.innerHTML = html;
 
-                const start = new Date(startDate);
+                const start = new Date(startDate.replace(/-/g, '/'));
                 const end = new Date(start);
                 end.setDate(end.getDate() + 6);
                 const opts = { day: "numeric", month: "long", year: "numeric" };
                 currentWeekDisplay.textContent =
                     start.toLocaleDateString("nl-NL", opts) + " - " +
                     end.toLocaleDateString("nl-NL", opts);
+
+                // Update arrow button targets based on newly displayed week
+                const arrowButtons = document.querySelectorAll(".wc-arrow-button");
+                if (arrowButtons.length >= 2) {
+                    const formatSlash = d => d.getFullYear() + "/" +
+                        String(d.getMonth() + 1).padStart(2, "0") + "/" +
+                        String(d.getDate()).padStart(2, "0");
+                    const prevDate = new Date(start);
+                    prevDate.setDate(prevDate.getDate() - 7);
+                    const nextDate = new Date(start);
+                    nextDate.setDate(nextDate.getDate() + 7);
+                    arrowButtons[0].dataset.weekStart = formatSlash(prevDate);
+                    arrowButtons[1].dataset.weekStart = formatSlash(nextDate);
+                }
+
+                // Sync the date filter with the currently shown week
+                const dateFilter = document.getElementById("wc-date-filter");
+                if (dateFilter) {
+                    const formatDash = d => d.getFullYear() + "-" +
+                        String(d.getMonth() + 1).padStart(2, "0") + "-" +
+                        String(d.getDate()).padStart(2, "0");
+                    dateFilter.value = formatDash(start);
+                }
 
                 initModalFunctionality();
                 initNewMaatwerkButton();
