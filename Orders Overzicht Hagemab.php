@@ -899,9 +899,15 @@ document.addEventListener("DOMContentLoaded", function() {
 
 function initAgendaNavigation() {
     const agendaContainer = document.getElementById("wc-weekagenda-container");
-    const navButtons = document.querySelectorAll(".wc-nav-elements-right .wc-nav-button:not(.wc-date-filter-button)");
+    const navButtons = document.querySelectorAll(".wc-arrow-button, .wc-today-button");
     const currentWeekDisplay = document.querySelector(".wc-current-week-display");
     const agendaVisibility = document.querySelector(".wc-weekagenda-wrapper").dataset.agendaVisibility;
+    let currentWeekStart = document.getElementById("wc-date-filter")
+        ? document.getElementById("wc-date-filter").value.replace(/-/g, '/')
+        : (navButtons[0] ? navButtons[0].dataset.weekStart : '');
+    const formatSlash = d => d.getFullYear() + "/" +
+        String(d.getMonth() + 1).padStart(2, "0") + "/" +
+        String(d.getDate()).padStart(2, "0");
 
     navButtons.forEach(button => {
         button.removeEventListener("click", handleNavButtonClick);
@@ -909,11 +915,19 @@ function initAgendaNavigation() {
     });
 
     function handleNavButtonClick() {
-        const newWeekStart = this.dataset.weekStart;
-        fetchAgenda(newWeekStart, agendaVisibility);
+        if (this.classList.contains('wc-today-button')) {
+            currentWeekStart = this.dataset.weekStart;
+        } else {
+            const diff = this.textContent.trim() === '>' ? 7 : -7;
+            const d = new Date(currentWeekStart.replace(/-/g, '/'));
+            d.setDate(d.getDate() + diff);
+            currentWeekStart = formatSlash(d);
+        }
+        fetchAgenda(currentWeekStart, agendaVisibility);
     }
 
     function fetchAgenda(startDate, agendaVisibility) {
+        currentWeekStart = startDate;
         if (agendaContainer) {
             agendaContainer.innerHTML = \'<div style="text-align:center;padding:50px;color:#fff;">Laden...</div>\';
         }
@@ -932,13 +946,36 @@ function initAgendaNavigation() {
             if (agendaContainer) {
                 agendaContainer.innerHTML = html;
 
-                const start = new Date(startDate);
+                const start = new Date(startDate.replace(/-/g, '/'));
                 const end = new Date(start);
                 end.setDate(end.getDate() + 6);
                 const opts = { day: "numeric", month: "long", year: "numeric" };
                 currentWeekDisplay.textContent =
                     start.toLocaleDateString("nl-NL", opts) + " - " +
                     end.toLocaleDateString("nl-NL", opts);
+
+                // Update arrow button targets based on newly displayed week
+                const arrowButtons = document.querySelectorAll(".wc-arrow-button");
+                if (arrowButtons.length >= 2) {
+                    const formatSlash = d => d.getFullYear() + "/" +
+                        String(d.getMonth() + 1).padStart(2, "0") + "/" +
+                        String(d.getDate()).padStart(2, "0");
+                    const prevDate = new Date(start);
+                    prevDate.setDate(prevDate.getDate() - 7);
+                    const nextDate = new Date(start);
+                    nextDate.setDate(nextDate.getDate() + 7);
+                    arrowButtons[0].dataset.weekStart = formatSlash(prevDate);
+                    arrowButtons[1].dataset.weekStart = formatSlash(nextDate);
+                }
+
+                // Sync the date filter with the currently shown week
+                const dateFilter = document.getElementById("wc-date-filter");
+                if (dateFilter) {
+                    const formatDash = d => d.getFullYear() + "-" +
+                        String(d.getMonth() + 1).padStart(2, "0") + "-" +
+                        String(d.getDate()).padStart(2, "0");
+                    dateFilter.value = formatDash(start);
+                }
 
                 initModalFunctionality();
                 initNewMaatwerkButton();
