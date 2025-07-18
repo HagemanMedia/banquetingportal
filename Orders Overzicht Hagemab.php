@@ -827,8 +827,8 @@ $output .= '<button class="wc-nav-button wc-help-button" title="Home" type="butt
     // Nieuwe "Vandaag" knop
     $output .= '<button class="wc-nav-button wc-today-button" data-week-start="' . date('Y/m/d', strtotime('monday this week')) . '">Deze week</button>';
     // Pijlknoppen
-    $output .= '<button class="wc-nav-button wc-arrow-button" data-week-start="' . date('Y/m/d', $prev_week_timestamp) . '">&lt;</button>';
-    $output .= '<button class="wc-nav-button wc-arrow-button" data-week-start="' . date('Y/m/d', $next_week_timestamp) . '">&gt;</button>';
+    $output .= '<button class="wc-nav-button wc-arrow-button" data-delta="-1" data-week-start="' . date('Y/m/d', $prev_week_timestamp) . '">&lt;</button>';
+    $output .= '<button class="wc-nav-button wc-arrow-button" data-delta="1" data-week-start="' . date('Y/m/d', $next_week_timestamp) . '">&gt;</button>';
     // Datumkiezer achter de pijltjes
     $output .= '<input type="date" id="wc-date-filter" class="wc-nav-button wc-date-filter-button" value="' . date('Y-m-d', $current_week_start_timestamp) . '">';
     $output .= '</div>'; // Sluit wc-nav-elements-right
@@ -902,15 +902,32 @@ function initAgendaNavigation() {
     const navButtons = document.querySelectorAll(".wc-nav-elements-right .wc-nav-button:not(.wc-date-filter-button)");
     const currentWeekDisplay = document.querySelector(".wc-current-week-display");
     const agendaVisibility = document.querySelector(".wc-weekagenda-wrapper").dataset.agendaVisibility;
+    const dateFilter = document.getElementById("wc-date-filter");
+    let currentWeekStart = new Date(dateFilter.value + "T00:00:00");
 
     navButtons.forEach(button => {
         button.removeEventListener("click", handleNavButtonClick);
         button.addEventListener("click", handleNavButtonClick);
     });
 
+    function formatSlash(d){
+        return d.getFullYear()+"/"+String(d.getMonth()+1).padStart(2,"0")+"/"+String(d.getDate()).padStart(2,"0");
+    }
+    function formatDash(d){
+        return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0");
+    }
+
     function handleNavButtonClick() {
-        const newWeekStart = this.dataset.weekStart;
-        fetchAgenda(newWeekStart, agendaVisibility);
+        let targetDate;
+        if (this.classList.contains("wc-arrow-button")) {
+            const delta = parseInt(this.dataset.delta || "0", 10);
+            currentWeekStart.setDate(currentWeekStart.getDate() + delta * 7);
+            targetDate = currentWeekStart;
+        } else {
+            targetDate = new Date(this.dataset.weekStart.replace(/-/g, '/'));
+            currentWeekStart = new Date(targetDate); // sync
+        }
+        fetchAgenda(formatSlash(targetDate), agendaVisibility);
     }
 
     function fetchAgenda(startDate, agendaVisibility) {
@@ -932,13 +949,37 @@ function initAgendaNavigation() {
             if (agendaContainer) {
                 agendaContainer.innerHTML = html;
 
-                const start = new Date(startDate);
+                const start = new Date(startDate.replace(/-/g, '/'));
+                currentWeekStart = new Date(start);
                 const end = new Date(start);
                 end.setDate(end.getDate() + 6);
                 const opts = { day: "numeric", month: "long", year: "numeric" };
                 currentWeekDisplay.textContent =
                     start.toLocaleDateString("nl-NL", opts) + " - " +
                     end.toLocaleDateString("nl-NL", opts);
+
+                // Update arrow button targets based on newly displayed week
+                const arrowButtons = document.querySelectorAll(".wc-arrow-button");
+                if (arrowButtons.length >= 2) {
+                    const formatSlash = d => d.getFullYear() + "/" +
+                        String(d.getMonth() + 1).padStart(2, "0") + "/" +
+                        String(d.getDate()).padStart(2, "0");
+                    const prevDate = new Date(start);
+                    prevDate.setDate(prevDate.getDate() - 7);
+                    const nextDate = new Date(start);
+                    nextDate.setDate(nextDate.getDate() + 7);
+                    arrowButtons[0].dataset.weekStart = formatSlash(prevDate);
+                    arrowButtons[1].dataset.weekStart = formatSlash(nextDate);
+                }
+
+                // Sync the date filter with the currently shown week
+                const dateFilter = document.getElementById("wc-date-filter");
+                if (dateFilter) {
+                    const formatDash = d => d.getFullYear() + "-" +
+                        String(d.getMonth() + 1).padStart(2, "0") + "-" +
+                        String(d.getDate()).padStart(2, "0");
+                    dateFilter.value = formatDash(start);
+                }
 
                 initModalFunctionality();
                 initNewMaatwerkButton();
