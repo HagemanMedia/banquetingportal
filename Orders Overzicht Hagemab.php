@@ -899,9 +899,15 @@ document.addEventListener("DOMContentLoaded", function() {
 
 function initAgendaNavigation() {
     const agendaContainer = document.getElementById("wc-weekagenda-container");
-    const navButtons = document.querySelectorAll(".wc-nav-elements-right .wc-nav-button:not(.wc-date-filter-button)");
+    const navButtons = document.querySelectorAll(".wc-arrow-button, .wc-today-button");
     const currentWeekDisplay = document.querySelector(".wc-current-week-display");
     const agendaVisibility = document.querySelector(".wc-weekagenda-wrapper").dataset.agendaVisibility;
+    let currentWeekStart = document.getElementById("wc-date-filter")
+        ? document.getElementById("wc-date-filter").value.replace(/-/g, '/')
+        : (navButtons[0] ? navButtons[0].dataset.weekStart : '');
+    const formatSlash = d => d.getFullYear() + "/" +
+        String(d.getMonth() + 1).padStart(2, "0") + "/" +
+        String(d.getDate()).padStart(2, "0");
 
     navButtons.forEach(button => {
         button.removeEventListener("click", handleNavButtonClick);
@@ -909,11 +915,19 @@ function initAgendaNavigation() {
     });
 
     function handleNavButtonClick() {
-        const newWeekStart = this.dataset.weekStart;
-        fetchAgenda(newWeekStart, agendaVisibility);
+        if (this.classList.contains('wc-today-button')) {
+            currentWeekStart = this.dataset.weekStart;
+        } else {
+            const diff = this.textContent.trim() === '>' ? 7 : -7;
+            const d = new Date(currentWeekStart.replace(/-/g, '/'));
+            d.setDate(d.getDate() + diff);
+            currentWeekStart = formatSlash(d);
+        }
+        fetchAgenda(currentWeekStart, agendaVisibility);
     }
 
     function fetchAgenda(startDate, agendaVisibility) {
+        currentWeekStart = startDate;
         if (agendaContainer) {
             agendaContainer.innerHTML = \'<div style="text-align:center;padding:50px;color:#fff;">Laden...</div>\';
         }
